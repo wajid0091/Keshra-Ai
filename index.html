@@ -24,6 +24,10 @@
         color: white;
       }
     </style>
+    <script>
+      // Early process initialization to catch environment variables
+      window.process = window.process || { env: {} };
+    </script>
     <script type="importmap">
 {
   "imports": {

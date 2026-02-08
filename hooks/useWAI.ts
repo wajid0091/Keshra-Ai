@@ -117,6 +117,7 @@ export const useWAI = () => {
     setIsGeneratingImage(true);
     setIsProcessing(true);
     try {
+      // Use process.env.API_KEY directly as required for standard deployment
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
@@ -130,7 +131,8 @@ export const useWAI = () => {
       }
     } catch (e: any) {
       console.error("Image generation error:", e);
-      addMessage('model', `Image synthesis failed: ${e.message || 'Check API permissions.'}`);
+      // Let the native error through without custom gatekeeping
+      addMessage('model', `Error: ${e.message || 'The neural engine returned an error.'}`);
     } finally {
       setIsGeneratingImage(false);
       setIsProcessing(false);
@@ -150,6 +152,7 @@ export const useWAI = () => {
     if (connectionState === ConnectionState.CONNECTED) disconnect();
     setConnectionState(ConnectionState.CONNECTING);
     try {
+      // Direct use of API key without manual conditional checks
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
       const inputCtx = new AudioContext({ sampleRate: 16000 });
       const outputCtx = new AudioContext({ sampleRate: 24000 });
@@ -243,6 +246,7 @@ export const useWAI = () => {
     addMessage('user', text || "Analysis Task");
     setIsProcessing(true);
     try {
+      // Direct use of API key to allow for platform-level injection
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
       const contents: any[] = [{ role: 'user', parts: [{ text: text || "Analyze this." }] }];
       if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
@@ -263,7 +267,7 @@ export const useWAI = () => {
       }
     } catch(e: any) { 
       console.error("Text message error:", e);
-      addMessage('model', `Connection error: ${e.message || 'Ensure your API Key is valid and active on Netlify.'}`); 
+      addMessage('model', `Connection error: ${e.message || 'Internal neural engine error.'}`); 
     }
     finally { setIsProcessing(false); }
   };
