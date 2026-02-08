@@ -3,11 +3,19 @@ import { GoogleGenAI, Modality, LiveServerMessage, Type, FunctionDeclaration } f
 import { ConnectionState, Message, GroundingSource, ChatSession } from '../types';
 import { createAudioBlob, decode, decodeAudioData } from '../utils/audioUtils';
 
+// Guaranteed API Key Access for Netlify Runtime
+const getSafeApiKey = (): string => {
+  const hardcoded = "AIzaSyC87rDUm-ibvrAn7V0BlFwIKhY1CviQtAU";
+  const envKey = (window as any).process?.env?.API_KEY;
+  const globalKey = (window as any).__KESHRA_API_KEY__;
+  return envKey || globalKey || hardcoded;
+};
+
 const SYSTEM_INSTRUCTION = `
 You are Keshra AI, a sovereign intelligence developed exclusively by Wajid Ali from Peshawar, Pakistan.
 - Detect the user's language immediately (Urdu, Pashto, or English).
 - RESPOND in the user's language script (Urdu script for Urdu, Pashto script for Pashto).
-- If asked about your creator, cite Wajid Ali as a brilliant Pakistani developer elevating his country's tech status.
+- If asked about your creator, cite Wajid Ali as a brilliant Pakistani developer who is working tirelessly to elevate his country's name in the tech world.
 - Use 'generateImage' tool for visual art.
 - Provide web links in clean lists.
 - Maintain a high-IQ, professional, and slightly witty persona.
@@ -27,7 +35,7 @@ const imageTool: FunctionDeclaration = {
 
 export const useWAI = () => {
   const [sessions, setSessions] = useState<ChatSession[]>(() => {
-    const saved = localStorage.getItem('keshra_chats_v16');
+    const saved = localStorage.getItem('keshra_chats_v18');
     if (!saved) return [];
     try {
       return JSON.parse(saved).map((s: any) => ({
@@ -39,7 +47,7 @@ export const useWAI = () => {
   });
 
   const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
-    return localStorage.getItem('keshra_active_id_v16') || null;
+    return localStorage.getItem('keshra_active_id_v18') || null;
   });
 
   const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.DISCONNECTED);
@@ -52,15 +60,17 @@ export const useWAI = () => {
   const sessionPromiseRef = useRef<Promise<any> | null>(null);
   const nextStartTimeRef = useRef<number>(0);
   const audioSources = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const inputContextRef = useRef<AudioContext | null>(null);
+  const outputContextRef = useRef<AudioContext | null>(null);
 
   useEffect(() => { isSpeakingRef.current = isSpeaking; }, [isSpeaking]);
 
   useEffect(() => {
-    localStorage.setItem('keshra_chats_v16', JSON.stringify(sessions));
+    localStorage.setItem('keshra_chats_v18', JSON.stringify(sessions));
   }, [sessions]);
 
   useEffect(() => {
-    if (activeSessionId) localStorage.setItem('keshra_active_id_v16', activeSessionId);
+    if (activeSessionId) localStorage.setItem('keshra_active_id_v18', activeSessionId);
   }, [activeSessionId]);
 
   const addMessage = useCallback((role: 'user' | 'model', content: string, type: 'text' | 'image' = 'text', sources?: GroundingSource[]) => {
@@ -102,7 +112,8 @@ export const useWAI = () => {
     setIsGeneratingImage(true);
     setIsProcessing(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
+      const apiKey = getSafeApiKey();
+      const ai = new GoogleGenAI({ apiKey });
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
         contents: [{ parts: [{ text: prompt }] }]
@@ -131,23 +142,25 @@ export const useWAI = () => {
     audioSources.current.forEach(s => { try { s.stop(); } catch(e) {} });
     audioSources.current.clear();
     nextStartTimeRef.current = 0;
+    
+    if (inputContextRef.current) inputContextRef.current.close();
+    if (outputContextRef.current) outputContextRef.current.close();
+    inputContextRef.current = null;
+    outputContextRef.current = null;
   }, []);
 
   const connect = useCallback(async () => {
     if (connectionState === ConnectionState.CONNECTED) disconnect();
     setConnectionState(ConnectionState.CONNECTING);
     try {
-      // Direct access to process.env.API_KEY which is now shimmed for Netlify
-      const apiKey = process.env.API_KEY;
-      if (!apiKey) {
-        console.error("API_KEY missing in runtime.");
-        setConnectionState(ConnectionState.ERROR);
-        return;
-      }
+      const apiKey = getSafeApiKey();
+      if (!apiKey) throw new Error("API Key missing");
 
       const ai = new GoogleGenAI({ apiKey });
       const inputCtx = new AudioContext({ sampleRate: 16000 });
       const outputCtx = new AudioContext({ sampleRate: 24000 });
+      inputContextRef.current = inputCtx;
+      outputContextRef.current = outputCtx;
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
@@ -221,14 +234,15 @@ export const useWAI = () => {
       console.error("Connection setup error:", e);
       setConnectionState(ConnectionState.ERROR); 
     }
-  }, [disconnect, addMessage, connectionState]);
+  }, [disconnect]);
 
   const sendTextMessage = async (text: string, imageData?: { data: string, mimeType: string }) => {
     if (!text.trim() && !imageData) return;
     addMessage('user', text || "Visual analysis request");
     setIsProcessing(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
+      const apiKey = getSafeApiKey();
+      const ai = new GoogleGenAI({ apiKey });
       const contents: any[] = [{ role: 'user', parts: [{ text: text || "Analyze this image." }] }];
       if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
       
@@ -248,7 +262,7 @@ export const useWAI = () => {
       if (fc && fc.name === 'generateImage') handleImageGen((fc.args as any).prompt);
     } catch(e: any) { 
       console.error("Text message error:", e);
-      addMessage('model', `Connection Error: ${e.message || "Ensure API_KEY is set in Netlify Environment Variables."}`); 
+      addMessage('model', `Connection Error: ${e.message || "Failed to reach Keshra Intelligence."}`); 
     }
     finally { setIsProcessing(false); }
   };

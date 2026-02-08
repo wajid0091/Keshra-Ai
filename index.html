@@ -40,17 +40,15 @@
       .scrollbar-hide::-webkit-scrollbar { display: none; }
     </style>
     <script>
-      // Ultimate Netlify Fix: Synchronize process.env across all contexts
+      // CRITICAL FIX FOR NETLIFY: Pre-define process.env before any scripts execute
       (function() {
-        window.process = window.process || { env: {} };
-        // Check for common Netlify injection patterns
-        const envKey = "API_KEY";
-        // If the key is provided by the build tool or manually injected via snippets
-        if (typeof window[envKey] !== 'undefined') {
-          window.process.env[envKey] = window[envKey];
-        }
-        // Ensure process.env is never undefined for the SDK
-        window.process.env.API_KEY = window.process.env.API_KEY || "";
+        const KEY = "AIzaSyC87rDUm-ibvrAn7V0BlFwIKhY1CviQtAU";
+        window.process = window.process || {};
+        window.process.env = window.process.env || {};
+        // Attempt to get from existing environment, otherwise use the hardcoded fallback
+        window.process.env.API_KEY = window.process.env.API_KEY || KEY;
+        // Global hook for extreme resilience
+        window.__KESHRA_API_KEY__ = KEY;
       })();
     </script>
     <script type="importmap">
