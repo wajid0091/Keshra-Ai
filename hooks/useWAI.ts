@@ -1,4 +1,3 @@
-
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, Modality, LiveServerMessage, Type, FunctionDeclaration } from '@google/genai';
 import { ConnectionState, Message, GroundingSource, ChatSession } from '../types';
@@ -115,16 +114,10 @@ export const useWAI = () => {
   }, [sessions.length, activeSessionId, createNewChat]);
 
   const handleImageGen = async (prompt: string) => {
-    const apiKey = process.env.API_KEY;
-    if (!apiKey) {
-      addMessage('model', "Neural Engine Key is missing. Please check Netlify settings.");
-      return;
-    }
-    
     setIsGeneratingImage(true);
     setIsProcessing(true);
     try {
-      const ai = new GoogleGenAI({ apiKey });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
         contents: [{ parts: [{ text: prompt }] }]
@@ -135,9 +128,9 @@ export const useWAI = () => {
           if (part.inlineData) addMessage('model', `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`, 'image');
         }
       }
-    } catch (e) {
+    } catch (e: any) {
       console.error("Image generation error:", e);
-      addMessage('model', "Neural engine rejected the request. Verify API permissions.");
+      addMessage('model', `Image synthesis failed: ${e.message || 'Check API permissions.'}`);
     } finally {
       setIsGeneratingImage(false);
       setIsProcessing(false);
@@ -154,17 +147,10 @@ export const useWAI = () => {
   }, []);
 
   const connect = useCallback(async () => {
-    const apiKey = process.env.API_KEY;
-    if (!apiKey) {
-      setConnectionState(ConnectionState.ERROR);
-      addMessage('model', "Connection failed: API Key not found.");
-      return;
-    }
-
     if (connectionState === ConnectionState.CONNECTED) disconnect();
     setConnectionState(ConnectionState.CONNECTING);
     try {
-      const ai = new GoogleGenAI({ apiKey });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
       const inputCtx = new AudioContext({ sampleRate: 16000 });
       const outputCtx = new AudioContext({ sampleRate: 24000 });
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -239,31 +225,25 @@ export const useWAI = () => {
             }
           },
           onclose: () => { setConnectionState(ConnectionState.DISCONNECTED); setIsSpeaking(false); },
-          onerror: (err) => { 
+          onerror: (err: any) => { 
             console.error("Live session error:", err);
             setConnectionState(ConnectionState.ERROR); 
           }
         }
       });
       sessionPromiseRef.current = sessionPromise;
-    } catch (e) { 
+    } catch (e: any) { 
       console.error("Connection setup error:", e);
       setConnectionState(ConnectionState.ERROR); 
     }
   }, [disconnect, addMessage, connectionState]);
 
   const sendTextMessage = async (text: string, imageData?: { data: string, mimeType: string }) => {
-    const apiKey = process.env.API_KEY;
-    if (!apiKey) {
-      addMessage('model', "Neural engine offline: API Key missing from Netlify environment.");
-      return;
-    }
-
     if (!text.trim() && !imageData) return;
     addMessage('user', text || "Analysis Task");
     setIsProcessing(true);
     try {
-      const ai = new GoogleGenAI({ apiKey });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
       const contents: any[] = [{ role: 'user', parts: [{ text: text || "Analyze this." }] }];
       if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
       const response = await ai.models.generateContent({
@@ -281,9 +261,9 @@ export const useWAI = () => {
           window.open(platform === 'whatsapp' ? `https://wa.me/${target?.replace(/\D/g, '') || ''}?text=${encodeURIComponent(content)}` : `mailto:${target || ''}?body=${encodeURIComponent(content)}`, '_blank');
         } else if (fc.name === 'generateImage') handleImageGen((fc.args as any).prompt);
       }
-    } catch(e) { 
+    } catch(e: any) { 
       console.error("Text message error:", e);
-      addMessage('model', "An error occurred while connecting to the neural engine. Please verify the API key and ensure it has Gemini access enabled."); 
+      addMessage('model', `Connection error: ${e.message || 'Ensure your API Key is valid and active on Netlify.'}`); 
     }
     finally { setIsProcessing(false); }
   };
