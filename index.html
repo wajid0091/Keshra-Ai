@@ -32,14 +32,26 @@
         50% { transform: scale(1); }
         100% { transform: scale(0.8); }
       }
+      .custom-scrollbar::-webkit-scrollbar { width: 2px; }
+      .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+      .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.05); border-radius: 10px; }
+      .rtl { direction: rtl; }
+      .font-urdu { font-family: 'Noto Sans Arabic', sans-serif; font-weight: 700; }
+      .scrollbar-hide::-webkit-scrollbar { display: none; }
     </style>
     <script>
-      // Initialize process.env globally to ensure Netlify variables are captured
-      window.process = window.process || { env: {} };
-      // This shim ensures that process.env.API_KEY is available during app execution
-      if (!window.process.env.API_KEY) {
-        window.process.env.API_KEY = ""; 
-      }
+      // Ultimate Netlify Fix: Synchronize process.env across all contexts
+      (function() {
+        window.process = window.process || { env: {} };
+        // Check for common Netlify injection patterns
+        const envKey = "API_KEY";
+        // If the key is provided by the build tool or manually injected via snippets
+        if (typeof window[envKey] !== 'undefined') {
+          window.process.env[envKey] = window[envKey];
+        }
+        // Ensure process.env is never undefined for the SDK
+        window.process.env.API_KEY = window.process.env.API_KEY || "";
+      })();
     </script>
     <script type="importmap">
 {

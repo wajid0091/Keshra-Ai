@@ -4,22 +4,22 @@ import { ConnectionState, Message, GroundingSource, ChatSession } from '../types
 import { createAudioBlob, decode, decodeAudioData } from '../utils/audioUtils';
 
 const SYSTEM_INSTRUCTION = `
-You are Keshra AI, developed exclusively by Wajid Ali from Peshawar, Pakistan.
-- Respond in the user's language (Urdu script for Urdu, Pashto script for Pashto).
-- Use clear Markdown formatting.
-- If asked about your creator, always cite Wajid Ali as a brilliant Pakistani developer who is working hard for Pakistan's tech future.
-- Use 'generateImage' tool for all visual art requests.
-- Provide web links in clean vertical lists.
-- Maintain a professional, sovereign, and intelligent persona.
+You are Keshra AI, a sovereign intelligence developed exclusively by Wajid Ali from Peshawar, Pakistan.
+- Detect the user's language immediately (Urdu, Pashto, or English).
+- RESPOND in the user's language script (Urdu script for Urdu, Pashto script for Pashto).
+- If asked about your creator, cite Wajid Ali as a brilliant Pakistani developer elevating his country's tech status.
+- Use 'generateImage' tool for visual art.
+- Provide web links in clean lists.
+- Maintain a high-IQ, professional, and slightly witty persona.
 `;
 
 const imageTool: FunctionDeclaration = {
   name: 'generateImage',
   parameters: {
     type: Type.OBJECT,
-    description: 'Generate high-quality visual art or photorealistic images.',
+    description: 'Generate photorealistic or artistic images based on description.',
     properties: {
-      prompt: { type: Type.STRING, description: 'Detailed prompt describing the visual.' }
+      prompt: { type: Type.STRING, description: 'The visual prompt.' }
     },
     required: ['prompt']
   }
@@ -27,7 +27,7 @@ const imageTool: FunctionDeclaration = {
 
 export const useWAI = () => {
   const [sessions, setSessions] = useState<ChatSession[]>(() => {
-    const saved = localStorage.getItem('keshra_chats_v15');
+    const saved = localStorage.getItem('keshra_chats_v16');
     if (!saved) return [];
     try {
       return JSON.parse(saved).map((s: any) => ({
@@ -39,7 +39,7 @@ export const useWAI = () => {
   });
 
   const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
-    return localStorage.getItem('keshra_active_id_v15') || null;
+    return localStorage.getItem('keshra_active_id_v16') || null;
   });
 
   const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.DISCONNECTED);
@@ -52,18 +52,15 @@ export const useWAI = () => {
   const sessionPromiseRef = useRef<Promise<any> | null>(null);
   const nextStartTimeRef = useRef<number>(0);
   const audioSources = useRef<Set<AudioBufferSourceNode>>(new Set());
-  const outputAudioContextRef = useRef<AudioContext | null>(null);
+
+  useEffect(() => { isSpeakingRef.current = isSpeaking; }, [isSpeaking]);
 
   useEffect(() => {
-    isSpeakingRef.current = isSpeaking;
-  }, [isSpeaking]);
-
-  useEffect(() => {
-    localStorage.setItem('keshra_chats_v15', JSON.stringify(sessions));
+    localStorage.setItem('keshra_chats_v16', JSON.stringify(sessions));
   }, [sessions]);
 
   useEffect(() => {
-    if (activeSessionId) localStorage.setItem('keshra_active_id_v15', activeSessionId);
+    if (activeSessionId) localStorage.setItem('keshra_active_id_v16', activeSessionId);
   }, [activeSessionId]);
 
   const addMessage = useCallback((role: 'user' | 'model', content: string, type: 'text' | 'image' = 'text', sources?: GroundingSource[]) => {
@@ -120,7 +117,7 @@ export const useWAI = () => {
       }
     } catch (e: any) {
       console.error("Image generation error:", e);
-      addMessage('model', `Synthesis Error: ${e.message || "Failed to generate image."}`);
+      addMessage('model', `Generation Error: ${e.message || "Failed to synthesize image."}`);
     } finally {
       setIsGeneratingImage(false);
       setIsProcessing(false);
@@ -140,10 +137,17 @@ export const useWAI = () => {
     if (connectionState === ConnectionState.CONNECTED) disconnect();
     setConnectionState(ConnectionState.CONNECTING);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
+      // Direct access to process.env.API_KEY which is now shimmed for Netlify
+      const apiKey = process.env.API_KEY;
+      if (!apiKey) {
+        console.error("API_KEY missing in runtime.");
+        setConnectionState(ConnectionState.ERROR);
+        return;
+      }
+
+      const ai = new GoogleGenAI({ apiKey });
       const inputCtx = new AudioContext({ sampleRate: 16000 });
       const outputCtx = new AudioContext({ sampleRate: 24000 });
-      outputAudioContextRef.current = outputCtx;
 
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
@@ -163,12 +167,9 @@ export const useWAI = () => {
             processor.onaudioprocess = (e) => {
               if (isSpeakingRef.current) return;
               const inputData = e.inputBuffer.getChannelData(0);
-              
-              // Volume Level calculation
               let sum = 0;
               for(let i=0; i<inputData.length; i++) sum += inputData[i] * inputData[i];
               setVolumeLevel(Math.sqrt(sum / inputData.length) * 5);
-
               sessionPromise.then(s => s.sendRealtimeInput({ media: createAudioBlob(inputData) }));
             };
             source.connect(processor);
@@ -184,21 +185,14 @@ export const useWAI = () => {
             const base64Audio = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
             if (base64Audio) {
               setIsSpeaking(true);
-              const audioBuffer = await decodeAudioData(
-                decode(base64Audio),
-                outputCtx,
-                24000,
-                1
-              );
+              const audioBuffer = await decodeAudioData(decode(base64Audio), outputCtx, 24000, 1);
               const source = outputCtx.createBufferSource();
               source.buffer = audioBuffer;
               source.connect(outputCtx.destination);
-              
               const start = Math.max(nextStartTimeRef.current, outputCtx.currentTime);
               source.start(start);
               nextStartTimeRef.current = start + audioBuffer.duration;
               audioSources.current.add(source);
-              
               source.onended = () => {
                 audioSources.current.delete(source);
                 if (audioSources.current.size === 0) setIsSpeaking(false);
@@ -241,10 +235,7 @@ export const useWAI = () => {
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents,
-        config: { 
-          systemInstruction: SYSTEM_INSTRUCTION, 
-          tools: [{ googleSearch: {} }, { functionDeclarations: [imageTool] }] 
-        }
+        config: { systemInstruction: SYSTEM_INSTRUCTION, tools: [{ googleSearch: {} }, { functionDeclarations: [imageTool] }] }
       });
 
       const sources: GroundingSource[] = [];
@@ -252,17 +243,12 @@ export const useWAI = () => {
         if (c.web) sources.push({ title: c.web.title, uri: c.web.uri }); 
       });
 
-      if (response.text) {
-        addMessage('model', response.text, 'text', sources);
-      }
-
+      if (response.text) addMessage('model', response.text, 'text', sources);
       const fc = response.candidates?.[0]?.content?.parts?.find(p => p.functionCall)?.functionCall;
-      if (fc && fc.name === 'generateImage') {
-        handleImageGen((fc.args as any).prompt);
-      }
+      if (fc && fc.name === 'generateImage') handleImageGen((fc.args as any).prompt);
     } catch(e: any) { 
       console.error("Text message error:", e);
-      addMessage('model', `Connection Error: ${e.message || "Could not reach Keshra Intelligence."}`); 
+      addMessage('model', `Connection Error: ${e.message || "Ensure API_KEY is set in Netlify Environment Variables."}`); 
     }
     finally { setIsProcessing(false); }
   };
