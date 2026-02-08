@@ -17,17 +17,18 @@ You are Keshra AI, a sovereign intelligence developed exclusively by Wajid Ali f
 - RESPOND in the user's language script (Urdu script for Urdu, Pashto script for Pashto).
 - If asked about your creator, cite Wajid Ali as a brilliant Pakistani developer who is working tirelessly to elevate his country's name in the tech world.
 - Use 'generateImage' tool for visual art requests.
-- Provide web links in clean lists.
+- Provide web links in clean lists when relevant.
 - Maintain a high-IQ, professional, and helpful persona.
+- This is a public AI assistant, treat every user with respect.
 `;
 
 const imageTool: FunctionDeclaration = {
   name: 'generateImage',
   parameters: {
     type: Type.OBJECT,
-    description: 'Generate photorealistic or artistic images based on description.',
+    description: 'Generate photorealistic or artistic images based on user description.',
     properties: {
-      prompt: { type: Type.STRING, description: 'The visual prompt.' }
+      prompt: { type: Type.STRING, description: 'The visual prompt for image generation.' }
     },
     required: ['prompt']
   }
@@ -36,17 +37,17 @@ const imageTool: FunctionDeclaration = {
 const formatErrorMessage = (error: any): string => {
   const errorStr = typeof error === 'string' ? error : JSON.stringify(error);
   if (errorStr.includes('429') || errorStr.includes('RESOURCE_EXHAUSTED')) {
-    return "معذرت، اس وقت میرے ذہانت کی حد (Quota) ختم ہو چکی ہے۔ براہ کرم کچھ دیر بعد دوبارہ کوشش کریں یا واجد علی سے رابطہ کریں۔\n\n(Intelligence limit reached. Please try again in a few minutes.)";
+    return "معذرت، اس وقت رش زیادہ ہونے کی وجہ سے میری ذہانت کی حد (Quota) مکمل ہو چکی ہے۔ براہ کرم 1 منٹ بعد دوبارہ کوشش کریں یا واجد علی سے رابطہ کریں۔";
   }
-  if (errorStr.includes('API key is missing')) {
-    return "اے پی آئی کی (API Key) کا مسئلہ ہے۔ براہ کرم نیٹ لیفی سیٹنگز چیک کریں۔";
+  if (errorStr.includes('400') || errorStr.includes('INVALID_ARGUMENT')) {
+    return "سسٹم میں کچھ تبدیلی کی ضرورت ہے۔ میں اسے ٹھیک کرنے کی کوشش کر رہا ہوں۔ براہ کرم دوبارہ پیغام بھیجیں۔";
   }
-  return `Connection Error: ${error.message || "An unexpected neural link failure occurred."}`;
+  return `کنکشن کا مسئلہ: ${error.message || "نیٹ ورک میں خرابی ہے۔"}`;
 };
 
 export const useWAI = () => {
   const [sessions, setSessions] = useState<ChatSession[]>(() => {
-    const saved = localStorage.getItem('keshra_chats_v19');
+    const saved = localStorage.getItem('keshra_chats_v20');
     if (!saved) return [];
     try {
       return JSON.parse(saved).map((s: any) => ({
@@ -58,7 +59,7 @@ export const useWAI = () => {
   });
 
   const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
-    return localStorage.getItem('keshra_active_id_v19') || null;
+    return localStorage.getItem('keshra_active_id_v20') || null;
   });
 
   const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.DISCONNECTED);
@@ -77,11 +78,11 @@ export const useWAI = () => {
   useEffect(() => { isSpeakingRef.current = isSpeaking; }, [isSpeaking]);
 
   useEffect(() => {
-    localStorage.setItem('keshra_chats_v19', JSON.stringify(sessions));
+    localStorage.setItem('keshra_chats_v20', JSON.stringify(sessions));
   }, [sessions]);
 
   useEffect(() => {
-    if (activeSessionId) localStorage.setItem('keshra_active_id_v19', activeSessionId);
+    if (activeSessionId) localStorage.setItem('keshra_active_id_v20', activeSessionId);
   }, [activeSessionId]);
 
   const addMessage = useCallback((role: 'user' | 'model', content: string, type: 'text' | 'image' = 'text', sources?: GroundingSource[]) => {
@@ -100,7 +101,7 @@ export const useWAI = () => {
 
   const createNewChat = useCallback(() => {
     const newId = Math.random().toString(36).substring(2, 9);
-    const newSession: ChatSession = { id: newId, title: 'New Conversation', messages: [], updatedAt: new Date() };
+    const newSession: ChatSession = { id: newId, title: 'نیا مکالمہ', messages: [], updatedAt: new Date() };
     setSessions(prev => [newSession, ...prev]);
     setActiveSessionId(newId);
     return newId;
@@ -165,8 +166,6 @@ export const useWAI = () => {
     setConnectionState(ConnectionState.CONNECTING);
     try {
       const apiKey = getSafeApiKey();
-      if (!apiKey) throw new Error("API Key missing");
-
       const ai = new GoogleGenAI({ apiKey });
       const inputCtx = new AudioContext({ sampleRate: 16000 });
       const outputCtx = new AudioContext({ sampleRate: 24000 });
@@ -181,7 +180,8 @@ export const useWAI = () => {
           responseModalities: [Modality.AUDIO],
           systemInstruction: SYSTEM_INSTRUCTION,
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
-          tools: [{ googleSearch: {} }, { functionDeclarations: [imageTool] }],
+          // Using only image tool in live to avoid tool-mixing conflicts
+          tools: [{ functionDeclarations: [imageTool] }],
         },
         callbacks: {
           onopen: () => {
@@ -227,7 +227,7 @@ export const useWAI = () => {
                 if (fc.name === 'generateImage') {
                   handleImageGen((fc.args as any).prompt);
                   sessionPromise.then(s => s.sendToolResponse({
-                    functionResponses: { id: fc.id, name: fc.name, response: { result: "Image generation started." } }
+                    functionResponses: { id: fc.id, name: fc.name, response: { result: "تصویر بنانے کا عمل شروع کر دیا گیا ہے۔" } }
                   }));
                 }
               }
@@ -251,7 +251,7 @@ export const useWAI = () => {
 
   const sendTextMessage = async (text: string, imageData?: { data: string, mimeType: string }) => {
     if (!text.trim() && !imageData) return;
-    addMessage('user', text || "Visual analysis request");
+    addMessage('user', text || "تصویر کا تجزیہ کریں");
     setIsProcessing(true);
     try {
       const apiKey = getSafeApiKey();
@@ -260,21 +260,21 @@ export const useWAI = () => {
       if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
       
       const response = await ai.models.generateContent({
-        // Using Flash Lite as default for public chat to stretch free quota limits
-        model: 'gemini-flash-lite-latest',
+        // Back to gemini-3-flash-preview for full tool and prompt stability
+        model: 'gemini-3-flash-preview',
         contents,
-        config: { systemInstruction: SYSTEM_INSTRUCTION, tools: [{ googleSearch: {} }, { functionDeclarations: [imageTool] }] }
-      });
-
-      const sources: GroundingSource[] = [];
-      response.candidates?.[0]?.groundingMetadata?.groundingChunks?.forEach((c: any) => { 
-        if (c.web) sources.push({ title: c.web.title, uri: c.web.uri }); 
+        config: { 
+          systemInstruction: SYSTEM_INSTRUCTION, 
+          // Note: In generateContent, mixing Search Grounding and Function Calling is restricted.
+          // Prioritizing Function Calling (Image Gen) for this sovereign Pakistani brand.
+          tools: [{ functionDeclarations: [imageTool] }] 
+        }
       });
 
       if (response.text) {
-        addMessage('model', response.text, 'text', sources);
+        addMessage('model', response.text, 'text');
       } else if (!response.candidates?.[0]?.content?.parts?.some(p => p.functionCall)) {
-         addMessage('model', "I'm processing your request but I couldn't formulate a text response right now.");
+         addMessage('model', "میں آپ کے پیغام پر غور کر رہا ہوں، براہ کرم ایک لمحہ انتظار کریں۔");
       }
 
       const fc = response.candidates?.[0]?.content?.parts?.find(p => p.functionCall)?.functionCall;
