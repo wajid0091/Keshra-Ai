@@ -1,4 +1,3 @@
-
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, Modality, LiveServerMessage, Type, FunctionDeclaration } from '@google/genai';
 import { ConnectionState, Message, GroundingSource, ChatSession } from '../types';
@@ -114,23 +113,11 @@ export const useWAI = () => {
     else if (!activeSessionId) setActiveSessionId(sessions[0].id);
   }, [sessions.length, activeSessionId, createNewChat]);
 
-  const getApiKey = () => {
-    const key = process.env.API_KEY || (window as any).process?.env?.API_KEY;
-    if (!key || key.trim() === "") return null;
-    return key;
-  };
-
   const handleImageGen = async (prompt: string) => {
-    const apiKey = getApiKey();
-    if (!apiKey) {
-      addMessage('model', "Neural Engine Offline: API Key is missing from Netlify settings.");
-      return;
-    }
-
     setIsGeneratingImage(true);
     setIsProcessing(true);
     try {
-      const ai = new GoogleGenAI({ apiKey });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
         contents: [{ parts: [{ text: prompt }] }]
@@ -143,7 +130,7 @@ export const useWAI = () => {
       }
     } catch (e: any) {
       console.error("Image generation error:", e);
-      addMessage('model', `Synthesis Error: ${e.message || "Could not generate image. Check API Key quotas."}`);
+      addMessage('model', `Error: ${e.message || "Ensure your API_KEY is correctly set in Netlify's Environment Variables."}`);
     } finally {
       setIsGeneratingImage(false);
       setIsProcessing(false);
@@ -160,17 +147,10 @@ export const useWAI = () => {
   }, []);
 
   const connect = useCallback(async () => {
-    const apiKey = getApiKey();
-    if (!apiKey) {
-      setConnectionState(ConnectionState.ERROR);
-      addMessage('model', "Connection Failed: API Key not found in environment. Please verify Netlify configuration.");
-      return;
-    }
-
     if (connectionState === ConnectionState.CONNECTED) disconnect();
     setConnectionState(ConnectionState.CONNECTING);
     try {
-      const ai = new GoogleGenAI({ apiKey });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
       const inputCtx = new AudioContext({ sampleRate: 16000 });
       const outputCtx = new AudioContext({ sampleRate: 24000 });
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -259,17 +239,11 @@ export const useWAI = () => {
   }, [disconnect, addMessage, connectionState]);
 
   const sendTextMessage = async (text: string, imageData?: { data: string, mimeType: string }) => {
-    const apiKey = getApiKey();
-    if (!apiKey) {
-      addMessage('model', "Neural Engine Offline: API Key not found. Please check your Netlify environment variables.");
-      return;
-    }
-
     if (!text.trim() && !imageData) return;
     addMessage('user', text || "Visual Analysis");
     setIsProcessing(true);
     try {
-      const ai = new GoogleGenAI({ apiKey });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
       const contents: any[] = [{ role: 'user', parts: [{ text: text || "Analyze this." }] }];
       if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
       const response = await ai.models.generateContent({
@@ -289,7 +263,7 @@ export const useWAI = () => {
       }
     } catch(e: any) { 
       console.error("Text message error:", e);
-      addMessage('model', `Connection Error: ${e.message || "Failed to connect to Keshra Intelligence."}`); 
+      addMessage('model', `Connection Error: ${e.message || "Ensure your API_KEY is set correctly in Netlify Environment Variables."}`); 
     }
     finally { setIsProcessing(false); }
   };
