@@ -1,31 +1,17 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, Modality, LiveServerMessage, Type, FunctionDeclaration } from '@google/genai';
 import { ConnectionState, Message, GroundingSource, ChatSession } from '../types';
-import { createAudioBlob, base64ToUint8Array, convertPCM16ToFloat32 } from '../utils/audioUtils';
+import { createAudioBlob, decode, decodeAudioData } from '../utils/audioUtils';
 
 const SYSTEM_INSTRUCTION = `
 You are Keshra AI, developed exclusively by Wajid Ali from Peshawar, Pakistan.
 - Respond in the user's language (Urdu script for Urdu, Pashto script for Pashto).
 - Use clear Markdown formatting.
-- If asked about your creator, always cite Wajid Ali as a brilliant Pakistani developer.
+- If asked about your creator, always cite Wajid Ali as a brilliant Pakistani developer who is working hard for Pakistan's tech future.
 - Use 'generateImage' tool for all visual art requests.
 - Provide web links in clean vertical lists.
 - Maintain a professional, sovereign, and intelligent persona.
 `;
-
-const redirectTool: FunctionDeclaration = {
-  name: 'redirectAction',
-  parameters: {
-    type: Type.OBJECT,
-    description: 'Redirect to WhatsApp or Email.',
-    properties: {
-      platform: { type: Type.STRING, enum: ['whatsapp', 'email'] },
-      content: { type: Type.STRING },
-      target: { type: Type.STRING }
-    },
-    required: ['platform', 'content']
-  }
-};
 
 const imageTool: FunctionDeclaration = {
   name: 'generateImage',
@@ -42,11 +28,14 @@ const imageTool: FunctionDeclaration = {
 export const useWAI = () => {
   const [sessions, setSessions] = useState<ChatSession[]>(() => {
     const saved = localStorage.getItem('keshra_chats_v15');
-    return saved ? JSON.parse(saved).map((s: any) => ({
-      ...s,
-      messages: s.messages.map((m: any) => ({ ...m, timestamp: new Date(m.timestamp) })),
-      updatedAt: new Date(s.updatedAt)
-    })) : [];
+    if (!saved) return [];
+    try {
+      return JSON.parse(saved).map((s: any) => ({
+        ...s,
+        messages: s.messages.map((m: any) => ({ ...m, timestamp: new Date(m.timestamp) })),
+        updatedAt: new Date(s.updatedAt)
+      }));
+    } catch { return []; }
   });
 
   const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
@@ -63,8 +52,7 @@ export const useWAI = () => {
   const sessionPromiseRef = useRef<Promise<any> | null>(null);
   const nextStartTimeRef = useRef<number>(0);
   const audioSources = useRef<Set<AudioBufferSourceNode>>(new Set());
-  const currentInputTranscription = useRef('');
-  const currentOutputTranscription = useRef('');
+  const outputAudioContextRef = useRef<AudioContext | null>(null);
 
   useEffect(() => {
     isSpeakingRef.current = isSpeaking;
@@ -79,7 +67,7 @@ export const useWAI = () => {
   }, [activeSessionId]);
 
   const addMessage = useCallback((role: 'user' | 'model', content: string, type: 'text' | 'image' = 'text', sources?: GroundingSource[]) => {
-    const newMessage = { id: Math.random().toString(36).substr(2, 9), role, content, type, timestamp: new Date(), sources };
+    const newMessage: Message = { id: Math.random().toString(36).substr(2, 9), role, content, type, timestamp: new Date(), sources };
     setSessions(prev => {
       let currentId = activeSessionId;
       if (!currentId) return prev;
@@ -125,12 +113,14 @@ export const useWAI = () => {
       const parts = response.candidates?.[0]?.content?.parts;
       if (parts) {
         for (const part of parts) {
-          if (part.inlineData) addMessage('model', `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`, 'image');
+          if (part.inlineData) {
+            addMessage('model', `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`, 'image');
+          }
         }
       }
     } catch (e: any) {
       console.error("Image generation error:", e);
-      addMessage('model', `Error: ${e.message || "Ensure your API_KEY is correctly set in Netlify's Environment Variables."}`);
+      addMessage('model', `Synthesis Error: ${e.message || "Failed to generate image."}`);
     } finally {
       setIsGeneratingImage(false);
       setIsProcessing(false);
@@ -153,6 +143,8 @@ export const useWAI = () => {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
       const inputCtx = new AudioContext({ sampleRate: 16000 });
       const outputCtx = new AudioContext({ sampleRate: 24000 });
+      outputAudioContextRef.current = outputCtx;
+
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
       const sessionPromise = ai.live.connect({
@@ -161,9 +153,7 @@ export const useWAI = () => {
           responseModalities: [Modality.AUDIO],
           systemInstruction: SYSTEM_INSTRUCTION,
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
-          tools: [{ googleSearch: {} }, { functionDeclarations: [redirectTool, imageTool] }],
-          inputAudioTranscription: {},
-          outputAudioTranscription: {}
+          tools: [{ googleSearch: {} }, { functionDeclarations: [imageTool] }],
         },
         callbacks: {
           onopen: () => {
@@ -173,6 +163,12 @@ export const useWAI = () => {
             processor.onaudioprocess = (e) => {
               if (isSpeakingRef.current) return;
               const inputData = e.inputBuffer.getChannelData(0);
+              
+              // Volume Level calculation
+              let sum = 0;
+              for(let i=0; i<inputData.length; i++) sum += inputData[i] * inputData[i];
+              setVolumeLevel(Math.sqrt(sum / inputData.length) * 5);
+
               sessionPromise.then(s => s.sendRealtimeInput({ media: createAudioBlob(inputData) }));
             };
             source.connect(processor);
@@ -188,38 +184,33 @@ export const useWAI = () => {
             const base64Audio = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
             if (base64Audio) {
               setIsSpeaking(true);
-              const audioBytes = base64ToUint8Array(base64Audio);
-              const audioData = convertPCM16ToFloat32(audioBytes.buffer);
-              const buffer = outputCtx.createBuffer(1, audioData.length, 24000);
-              buffer.getChannelData(0).set(audioData);
+              const audioBuffer = await decodeAudioData(
+                decode(base64Audio),
+                outputCtx,
+                24000,
+                1
+              );
               const source = outputCtx.createBufferSource();
-              source.buffer = buffer;
+              source.buffer = audioBuffer;
               source.connect(outputCtx.destination);
+              
               const start = Math.max(nextStartTimeRef.current, outputCtx.currentTime);
               source.start(start);
-              nextStartTimeRef.current = start + buffer.duration;
+              nextStartTimeRef.current = start + audioBuffer.duration;
               audioSources.current.add(source);
+              
               source.onended = () => {
                 audioSources.current.delete(source);
                 if (audioSources.current.size === 0) setIsSpeaking(false);
               };
             }
-            if (msg.serverContent?.inputTranscription) currentInputTranscription.current += msg.serverContent.inputTranscription.text;
-            if (msg.serverContent?.outputTranscription) currentOutputTranscription.current += msg.serverContent.outputTranscription.text;
-            if (msg.serverContent?.turnComplete) {
-              if (currentInputTranscription.current) { addMessage('user', currentInputTranscription.current); currentInputTranscription.current = ''; }
-              if (currentOutputTranscription.current) { addMessage('model', currentOutputTranscription.current); currentOutputTranscription.current = ''; }
-            }
             if (msg.toolCall) {
               for (const fc of msg.toolCall.functionCalls) {
-                if (fc.name === 'redirectAction') {
-                  const { platform, content, target } = fc.args as any;
-                  let url = platform === 'whatsapp' ? `https://wa.me/${target?.replace(/\D/g, '') || ''}?text=${encodeURIComponent(content)}` : `mailto:${target || ''}?body=${encodeURIComponent(content)}`;
-                  window.open(url, '_blank');
-                  sessionPromise.then(s => s.sendToolResponse({ functionResponses: { id: fc.id, name: fc.name, response: { result: "Success" } } }));
-                } else if (fc.name === 'generateImage') {
+                if (fc.name === 'generateImage') {
                   handleImageGen((fc.args as any).prompt);
-                  sessionPromise.then(s => s.sendToolResponse({ functionResponses: { id: fc.id, name: fc.name, response: { result: "Initiated" } } }));
+                  sessionPromise.then(s => s.sendToolResponse({
+                    functionResponses: { id: fc.id, name: fc.name, response: { result: "Image generation started." } }
+                  }));
                 }
               }
             }
@@ -240,30 +231,38 @@ export const useWAI = () => {
 
   const sendTextMessage = async (text: string, imageData?: { data: string, mimeType: string }) => {
     if (!text.trim() && !imageData) return;
-    addMessage('user', text || "Visual Analysis");
+    addMessage('user', text || "Visual analysis request");
     setIsProcessing(true);
     try {
       const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || "" });
-      const contents: any[] = [{ role: 'user', parts: [{ text: text || "Analyze this." }] }];
+      const contents: any[] = [{ role: 'user', parts: [{ text: text || "Analyze this image." }] }];
       if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
+      
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview',
         contents,
-        config: { systemInstruction: SYSTEM_INSTRUCTION, tools: [{ googleSearch: {} }, { functionDeclarations: [redirectTool, imageTool] }] }
+        config: { 
+          systemInstruction: SYSTEM_INSTRUCTION, 
+          tools: [{ googleSearch: {} }, { functionDeclarations: [imageTool] }] 
+        }
       });
+
       const sources: GroundingSource[] = [];
-      response.candidates?.[0]?.groundingMetadata?.groundingChunks?.forEach((c: any) => { if (c.web) sources.push({ title: c.web.title, uri: c.web.uri }); });
-      if (response.text) addMessage('model', response.text, 'text', sources);
+      response.candidates?.[0]?.groundingMetadata?.groundingChunks?.forEach((c: any) => { 
+        if (c.web) sources.push({ title: c.web.title, uri: c.web.uri }); 
+      });
+
+      if (response.text) {
+        addMessage('model', response.text, 'text', sources);
+      }
+
       const fc = response.candidates?.[0]?.content?.parts?.find(p => p.functionCall)?.functionCall;
-      if (fc) {
-        if (fc.name === 'redirectAction') {
-          const { platform, content, target } = fc.args as any;
-          window.open(platform === 'whatsapp' ? `https://wa.me/${target?.replace(/\D/g, '') || ''}?text=${encodeURIComponent(content)}` : `mailto:${target || ''}?body=${encodeURIComponent(content)}`, '_blank');
-        } else if (fc.name === 'generateImage') handleImageGen((fc.args as any).prompt);
+      if (fc && fc.name === 'generateImage') {
+        handleImageGen((fc.args as any).prompt);
       }
     } catch(e: any) { 
       console.error("Text message error:", e);
-      addMessage('model', `Connection Error: ${e.message || "Ensure your API_KEY is set correctly in Netlify Environment Variables."}`); 
+      addMessage('model', `Connection Error: ${e.message || "Could not reach Keshra Intelligence."}`); 
     }
     finally { setIsProcessing(false); }
   };

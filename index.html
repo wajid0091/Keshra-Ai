@@ -34,17 +34,19 @@
       }
     </style>
     <script>
-      // Force initialize process.env before any scripts load
+      // Initialize process.env globally to ensure Netlify variables are captured
       window.process = window.process || { env: {} };
-      // Attempt to capture API_KEY from global scope if Netlify injects it via snippets or other methods
-      window.process.env.API_KEY = window.process.env.API_KEY || window._env_?.API_KEY || "";
+      // This shim ensures that process.env.API_KEY is available during app execution
+      if (!window.process.env.API_KEY) {
+        window.process.env.API_KEY = ""; 
+      }
     </script>
     <script type="importmap">
 {
   "imports": {
     "@google/genai": "https://esm.sh/@google/genai@1.37.0",
-    "react": "https://esm.sh/react@19.2.3",
-    "react-dom/client": "https://esm.sh/react-dom@19.2.3/client",
+    "react": "https://esm.sh/react@19.0.0",
+    "react-dom/client": "https://esm.sh/react-dom@19.0.0/client",
     "lucide-react": "https://esm.sh/lucide-react@0.475.0",
     "react-dom/": "https://esm.sh/react-dom@^19.2.4/",
     "react/": "https://esm.sh/react@^19.2.4/"
