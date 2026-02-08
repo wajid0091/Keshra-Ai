@@ -1,0 +1,8 @@
+{
+  "name": "Keshra AI",
+  "description": "Premium AI assistant by Wajid Ali from Peshawar, featuring advanced Search, Image Generation, and Voice Uplink.",
+  "requestFramePermissions": [
+    "microphone",
+    "geolocation"
+  ]
+}
