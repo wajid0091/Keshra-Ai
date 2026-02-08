@@ -16,9 +16,9 @@ You are Keshra AI, a sovereign intelligence developed exclusively by Wajid Ali f
 - Detect the user's language immediately (Urdu, Pashto, or English).
 - RESPOND in the user's language script (Urdu script for Urdu, Pashto script for Pashto).
 - If asked about your creator, cite Wajid Ali as a brilliant Pakistani developer who is working tirelessly to elevate his country's name in the tech world.
-- Use 'generateImage' tool for visual art.
+- Use 'generateImage' tool for visual art requests.
 - Provide web links in clean lists.
-- Maintain a high-IQ, professional, and slightly witty persona.
+- Maintain a high-IQ, professional, and helpful persona.
 `;
 
 const imageTool: FunctionDeclaration = {
@@ -33,9 +33,20 @@ const imageTool: FunctionDeclaration = {
   }
 };
 
+const formatErrorMessage = (error: any): string => {
+  const errorStr = typeof error === 'string' ? error : JSON.stringify(error);
+  if (errorStr.includes('429') || errorStr.includes('RESOURCE_EXHAUSTED')) {
+    return "معذرت، اس وقت میرے ذہانت کی حد (Quota) ختم ہو چکی ہے۔ براہ کرم کچھ دیر بعد دوبارہ کوشش کریں یا واجد علی سے رابطہ کریں۔\n\n(Intelligence limit reached. Please try again in a few minutes.)";
+  }
+  if (errorStr.includes('API key is missing')) {
+    return "اے پی آئی کی (API Key) کا مسئلہ ہے۔ براہ کرم نیٹ لیفی سیٹنگز چیک کریں۔";
+  }
+  return `Connection Error: ${error.message || "An unexpected neural link failure occurred."}`;
+};
+
 export const useWAI = () => {
   const [sessions, setSessions] = useState<ChatSession[]>(() => {
-    const saved = localStorage.getItem('keshra_chats_v18');
+    const saved = localStorage.getItem('keshra_chats_v19');
     if (!saved) return [];
     try {
       return JSON.parse(saved).map((s: any) => ({
@@ -47,7 +58,7 @@ export const useWAI = () => {
   });
 
   const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
-    return localStorage.getItem('keshra_active_id_v18') || null;
+    return localStorage.getItem('keshra_active_id_v19') || null;
   });
 
   const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.DISCONNECTED);
@@ -66,11 +77,11 @@ export const useWAI = () => {
   useEffect(() => { isSpeakingRef.current = isSpeaking; }, [isSpeaking]);
 
   useEffect(() => {
-    localStorage.setItem('keshra_chats_v18', JSON.stringify(sessions));
+    localStorage.setItem('keshra_chats_v19', JSON.stringify(sessions));
   }, [sessions]);
 
   useEffect(() => {
-    if (activeSessionId) localStorage.setItem('keshra_active_id_v18', activeSessionId);
+    if (activeSessionId) localStorage.setItem('keshra_active_id_v19', activeSessionId);
   }, [activeSessionId]);
 
   const addMessage = useCallback((role: 'user' | 'model', content: string, type: 'text' | 'image' = 'text', sources?: GroundingSource[]) => {
@@ -128,7 +139,7 @@ export const useWAI = () => {
       }
     } catch (e: any) {
       console.error("Image generation error:", e);
-      addMessage('model', `Generation Error: ${e.message || "Failed to synthesize image."}`);
+      addMessage('model', formatErrorMessage(e));
     } finally {
       setIsGeneratingImage(false);
       setIsProcessing(false);
@@ -225,6 +236,7 @@ export const useWAI = () => {
           onclose: () => { setConnectionState(ConnectionState.DISCONNECTED); setIsSpeaking(false); },
           onerror: (err: any) => { 
             console.error("Live session error:", err);
+            addMessage('model', formatErrorMessage(err));
             setConnectionState(ConnectionState.ERROR); 
           }
         }
@@ -232,9 +244,10 @@ export const useWAI = () => {
       sessionPromiseRef.current = sessionPromise;
     } catch (e: any) { 
       console.error("Connection setup error:", e);
+      addMessage('model', formatErrorMessage(e));
       setConnectionState(ConnectionState.ERROR); 
     }
-  }, [disconnect]);
+  }, [disconnect, addMessage]);
 
   const sendTextMessage = async (text: string, imageData?: { data: string, mimeType: string }) => {
     if (!text.trim() && !imageData) return;
@@ -247,7 +260,8 @@ export const useWAI = () => {
       if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
       
       const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview',
+        // Using Flash Lite as default for public chat to stretch free quota limits
+        model: 'gemini-flash-lite-latest',
         contents,
         config: { systemInstruction: SYSTEM_INSTRUCTION, tools: [{ googleSearch: {} }, { functionDeclarations: [imageTool] }] }
       });
@@ -257,12 +271,17 @@ export const useWAI = () => {
         if (c.web) sources.push({ title: c.web.title, uri: c.web.uri }); 
       });
 
-      if (response.text) addMessage('model', response.text, 'text', sources);
+      if (response.text) {
+        addMessage('model', response.text, 'text', sources);
+      } else if (!response.candidates?.[0]?.content?.parts?.some(p => p.functionCall)) {
+         addMessage('model', "I'm processing your request but I couldn't formulate a text response right now.");
+      }
+
       const fc = response.candidates?.[0]?.content?.parts?.find(p => p.functionCall)?.functionCall;
       if (fc && fc.name === 'generateImage') handleImageGen((fc.args as any).prompt);
     } catch(e: any) { 
       console.error("Text message error:", e);
-      addMessage('model', `Connection Error: ${e.message || "Failed to reach Keshra Intelligence."}`); 
+      addMessage('model', formatErrorMessage(e)); 
     }
     finally { setIsProcessing(false); }
   };
