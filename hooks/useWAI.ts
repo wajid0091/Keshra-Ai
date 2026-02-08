@@ -1,3 +1,4 @@
+
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, Modality, LiveServerMessage, Type, FunctionDeclaration } from '@google/genai';
 import { ConnectionState, Message, GroundingSource, ChatSession } from '../types';
@@ -117,7 +118,7 @@ export const useWAI = () => {
     setIsGeneratingImage(true);
     setIsProcessing(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
         contents: [{ parts: [{ text: prompt }] }]
@@ -129,7 +130,8 @@ export const useWAI = () => {
         }
       }
     } catch (e) {
-      addMessage('model', "Sorry, I encountered an error generating the image.");
+      console.error("Image generation error:", e);
+      addMessage('model', "Sorry, I encountered an error generating the image. Please check the API key.");
     } finally {
       setIsGeneratingImage(false);
       setIsProcessing(false);
@@ -149,7 +151,7 @@ export const useWAI = () => {
     if (connectionState === ConnectionState.CONNECTED) disconnect();
     setConnectionState(ConnectionState.CONNECTING);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const inputCtx = new AudioContext({ sampleRate: 16000 });
       const outputCtx = new AudioContext({ sampleRate: 24000 });
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -224,11 +226,17 @@ export const useWAI = () => {
             }
           },
           onclose: () => { setConnectionState(ConnectionState.DISCONNECTED); setIsSpeaking(false); },
-          onerror: () => setConnectionState(ConnectionState.ERROR)
+          onerror: (err) => { 
+            console.error("Live session error:", err);
+            setConnectionState(ConnectionState.ERROR); 
+          }
         }
       });
       sessionPromiseRef.current = sessionPromise;
-    } catch (e) { setConnectionState(ConnectionState.ERROR); }
+    } catch (e) { 
+      console.error("Connection setup error:", e);
+      setConnectionState(ConnectionState.ERROR); 
+    }
   }, [disconnect, addMessage, connectionState]);
 
   const sendTextMessage = async (text: string, imageData?: { data: string, mimeType: string }) => {
@@ -236,7 +244,7 @@ export const useWAI = () => {
     addMessage('user', text || "Analysis Task");
     setIsProcessing(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY || '' });
+      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY });
       const contents: any[] = [{ role: 'user', parts: [{ text: text || "Analyze this." }] }];
       if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
       const response = await ai.models.generateContent({
@@ -254,7 +262,10 @@ export const useWAI = () => {
           window.open(platform === 'whatsapp' ? `https://wa.me/${target?.replace(/\D/g, '') || ''}?text=${encodeURIComponent(content)}` : `mailto:${target || ''}?body=${encodeURIComponent(content)}`, '_blank');
         } else if (fc.name === 'generateImage') handleImageGen((fc.args as any).prompt);
       }
-    } catch(e) { addMessage('model', "An error occurred."); }
+    } catch(e) { 
+      console.error("Text message error:", e);
+      addMessage('model', "An error occurred while connecting to the neural engine. Please verify the API settings on Netlify."); 
+    }
     finally { setIsProcessing(false); }
   };
 
