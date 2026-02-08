@@ -1,3 +1,4 @@
+
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, Modality, LiveServerMessage, Type, FunctionDeclaration } from '@google/genai';
 import { ConnectionState, Message, GroundingSource, ChatSession } from '../types';
@@ -5,12 +6,12 @@ import { createAudioBlob, base64ToUint8Array, convertPCM16ToFloat32 } from '../u
 
 const SYSTEM_INSTRUCTION = `
 You are Keshra AI, developed exclusively by Wajid Ali from Peshawar, Pakistan.
-- Respond in the user's language (Urdu script for Urdu).
+- Respond in the user's language (Urdu script for Urdu, Pashto script for Pashto).
 - Use clear Markdown formatting.
-- ONLY mention Wajid Ali if explicitly asked about your creator.
-- NEVER mention external technical frameworks (Gemini, Google, etc.).
-- Use 'generateImage' for visual tasks.
-- Provide links in vertical lists for clarity.
+- If asked about your creator, always cite Wajid Ali as a brilliant Pakistani developer.
+- Use 'generateImage' tool for all visual art requests.
+- Provide web links in clean vertical lists.
+- Maintain a professional, sovereign, and intelligent persona.
 `;
 
 const redirectTool: FunctionDeclaration = {
@@ -31,9 +32,9 @@ const imageTool: FunctionDeclaration = {
   name: 'generateImage',
   parameters: {
     type: Type.OBJECT,
-    description: 'Generate high-quality visual art.',
+    description: 'Generate high-quality visual art or photorealistic images.',
     properties: {
-      prompt: { type: Type.STRING, description: 'Prompt describing the image.' }
+      prompt: { type: Type.STRING, description: 'Detailed prompt describing the visual.' }
     },
     required: ['prompt']
   }
@@ -113,12 +114,23 @@ export const useWAI = () => {
     else if (!activeSessionId) setActiveSessionId(sessions[0].id);
   }, [sessions.length, activeSessionId, createNewChat]);
 
+  const getApiKey = () => {
+    const key = process.env.API_KEY || (window as any).process?.env?.API_KEY;
+    if (!key || key.trim() === "") return null;
+    return key;
+  };
+
   const handleImageGen = async (prompt: string) => {
+    const apiKey = getApiKey();
+    if (!apiKey) {
+      addMessage('model', "Neural Engine Offline: API Key is missing from Netlify settings.");
+      return;
+    }
+
     setIsGeneratingImage(true);
     setIsProcessing(true);
     try {
-      // Use process.env.API_KEY directly as required for standard deployment
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
+      const ai = new GoogleGenAI({ apiKey });
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image',
         contents: [{ parts: [{ text: prompt }] }]
@@ -131,8 +143,7 @@ export const useWAI = () => {
       }
     } catch (e: any) {
       console.error("Image generation error:", e);
-      // Let the native error through without custom gatekeeping
-      addMessage('model', `Error: ${e.message || 'The neural engine returned an error.'}`);
+      addMessage('model', `Synthesis Error: ${e.message || "Could not generate image. Check API Key quotas."}`);
     } finally {
       setIsGeneratingImage(false);
       setIsProcessing(false);
@@ -149,11 +160,17 @@ export const useWAI = () => {
   }, []);
 
   const connect = useCallback(async () => {
+    const apiKey = getApiKey();
+    if (!apiKey) {
+      setConnectionState(ConnectionState.ERROR);
+      addMessage('model', "Connection Failed: API Key not found in environment. Please verify Netlify configuration.");
+      return;
+    }
+
     if (connectionState === ConnectionState.CONNECTED) disconnect();
     setConnectionState(ConnectionState.CONNECTING);
     try {
-      // Direct use of API key without manual conditional checks
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
+      const ai = new GoogleGenAI({ apiKey });
       const inputCtx = new AudioContext({ sampleRate: 16000 });
       const outputCtx = new AudioContext({ sampleRate: 24000 });
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
@@ -242,12 +259,17 @@ export const useWAI = () => {
   }, [disconnect, addMessage, connectionState]);
 
   const sendTextMessage = async (text: string, imageData?: { data: string, mimeType: string }) => {
+    const apiKey = getApiKey();
+    if (!apiKey) {
+      addMessage('model', "Neural Engine Offline: API Key not found. Please check your Netlify environment variables.");
+      return;
+    }
+
     if (!text.trim() && !imageData) return;
-    addMessage('user', text || "Analysis Task");
+    addMessage('user', text || "Visual Analysis");
     setIsProcessing(true);
     try {
-      // Direct use of API key to allow for platform-level injection
-      const ai = new GoogleGenAI({ apiKey: process.env.API_KEY as string });
+      const ai = new GoogleGenAI({ apiKey });
       const contents: any[] = [{ role: 'user', parts: [{ text: text || "Analyze this." }] }];
       if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
       const response = await ai.models.generateContent({
@@ -267,7 +289,7 @@ export const useWAI = () => {
       }
     } catch(e: any) { 
       console.error("Text message error:", e);
-      addMessage('model', `Connection error: ${e.message || 'Internal neural engine error.'}`); 
+      addMessage('model', `Connection Error: ${e.message || "Failed to connect to Keshra Intelligence."}`); 
     }
     finally { setIsProcessing(false); }
   };
