@@ -17,7 +17,7 @@ You are Keshra AI, a sovereign intelligence developed exclusively by Wajid Ali f
 - Identity: If asked about your creator, cite Wajid Ali as a brilliant Pakistani developer elevating his country's name in tech.
 - Voice Interaction Greeting: When a voice session starts, immediately greet the user: "کیشرا اے آئی آپ کی خدمت میں حاضر ہے۔ میں آپ کی کیا مدد کر سکتا ہوں؟" (Urdu) or "Keshra AI is here to help you. How can I assist you today?" (English).
 - Image Generation: Use the 'generateImage' tool for art or visual creation requests.
-- Information & News: You have access to Google Search. Use it to provide the latest news and up-to-date information when asked.
+- Information & News: You have access to Google Search. ALWAYS use the 'googleSearch' tool for queries about current events, news, specific people (like Prime Ministers, Governors), sports scores, or dynamic facts. Do not rely on training data for real-time information.
 - Personality: Helpful, high-IQ, sophisticated, yet professional.
 `;
 
@@ -73,12 +73,29 @@ export const useWAI = () => {
   useEffect(() => { localStorage.setItem('keshra_chats_v21_final', JSON.stringify(sessions)); }, [sessions]);
   useEffect(() => { if (activeSessionId) localStorage.setItem('keshra_active_id_v21_final', activeSessionId); }, [activeSessionId]);
 
-  const addMessage = useCallback((role: 'user' | 'model', content: string, type: 'text' | 'image' = 'text', sources?: GroundingSource[]) => {
-    const newMessage: Message = { id: Math.random().toString(36).substr(2, 9), role, content, type, timestamp: new Date(), sources };
+  const createNewChat = useCallback(() => {
+    const newId = Math.random().toString(36).substring(2, 9);
+    const newSession: ChatSession = { id: newId, title: 'New Conversation', messages: [], updatedAt: new Date() };
+    setSessions(prev => [newSession, ...prev]);
+    setActiveSessionId(newId);
+    return newId;
+  }, []);
+
+  const addMessage = useCallback((role: 'user' | 'model', content: string, type: 'text' | 'image' | 'loading-image' = 'text', sources?: GroundingSource[], targetSessionId?: string, customId?: string) => {
+    const newMessage: Message = { 
+      id: customId || Math.random().toString(36).substr(2, 9), 
+      role, 
+      content, 
+      type, 
+      timestamp: new Date(), 
+      sources 
+    };
+    
     setSessions(prev => {
-      let currentId = activeSessionId;
-      if (!currentId) return prev;
-      return prev.map(s => s.id === currentId ? {
+      const idToUpdate = targetSessionId || activeSessionId;
+      if (!idToUpdate) return prev;
+
+      return prev.map(s => s.id === idToUpdate ? {
         ...s,
         messages: [...s.messages, newMessage],
         updatedAt: new Date(),
@@ -87,12 +104,12 @@ export const useWAI = () => {
     });
   }, [activeSessionId]);
 
-  const createNewChat = useCallback(() => {
-    const newId = Math.random().toString(36).substring(2, 9);
-    const newSession: ChatSession = { id: newId, title: 'New Conversation', messages: [], updatedAt: new Date() };
-    setSessions(prev => [newSession, ...prev]);
-    setActiveSessionId(newId);
-    return newId;
+  const updateMessage = useCallback((sessionId: string, messageId: string, updates: Partial<Message>) => {
+    setSessions(prev => prev.map(s => s.id === sessionId ? {
+      ...s,
+      messages: s.messages.map(m => m.id === messageId ? { ...m, ...updates } : m),
+      updatedAt: new Date()
+    } : s));
   }, []);
 
   const deleteSession = useCallback((id: string) => {
@@ -103,24 +120,32 @@ export const useWAI = () => {
     });
   }, [activeSessionId]);
 
-  const handleImageGen = async (prompt: string) => {
+  const handleImageGen = async (prompt: string, sessionId: string) => {
+    const placeholderId = Math.random().toString(36).substr(2, 9);
+    addMessage('model', 'Creating your masterpiece...', 'loading-image', undefined, sessionId, placeholderId);
+    
     setIsProcessing(true);
     try {
       const ai = new GoogleGenAI({ apiKey: getApiKey() });
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-image', // Nano Banana series for visual art
+        model: 'gemini-2.5-flash-image', 
         contents: [{ parts: [{ text: prompt }] }]
       });
       const parts = response.candidates?.[0]?.content?.parts;
       if (parts) {
         for (const part of parts) {
           if (part.inlineData) {
-            addMessage('model', `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`, 'image');
+            updateMessage(sessionId, placeholderId, {
+              type: 'image',
+              content: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`
+            });
+            return; 
           }
         }
       }
+      updateMessage(sessionId, placeholderId, { type: 'text', content: "I couldn't generate an image at this moment." });
     } catch (e: any) {
-      addMessage('model', formatErrorMessage(e));
+      updateMessage(sessionId, placeholderId, { type: 'text', content: formatErrorMessage(e) });
     } finally {
       setIsProcessing(false);
     }
@@ -128,6 +153,9 @@ export const useWAI = () => {
 
   const connect = useCallback(async () => {
     setConnectionState(ConnectionState.CONNECTING);
+    let currentSessionId = activeSessionId;
+    if (!currentSessionId) currentSessionId = createNewChat();
+
     try {
       const ai = new GoogleGenAI({ apiKey: getApiKey() });
       const inputCtx = new AudioContext({ sampleRate: 16000 });
@@ -142,9 +170,7 @@ export const useWAI = () => {
           responseModalities: [Modality.AUDIO],
           systemInstruction: SYSTEM_INSTRUCTION,
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
-          tools: [{ functionDeclarations: [imageTool] }],
-          inputAudioTranscription: { model: 'gemini-2.5-flash-native-audio-preview-12-2025' },
-          outputAudioTranscription: { model: 'gemini-2.5-flash-native-audio-preview-12-2025' }
+          tools: [{ googleSearch: {} }, { functionDeclarations: [imageTool] }],
         },
         callbacks: {
           onopen: () => {
@@ -157,7 +183,13 @@ export const useWAI = () => {
               let sum = 0;
               for(let i=0; i<inputData.length; i++) sum += inputData[i] * inputData[i];
               setVolumeLevel(Math.sqrt(sum / inputData.length) * 5);
-              sessionPromise.then(s => s.sendRealtimeInput({ media: createAudioBlob(inputData) }));
+              sessionPromise.then(s => {
+                try {
+                  s.sendRealtimeInput({ media: createAudioBlob(inputData) });
+                } catch (err) {
+                  // Silent fail if socket not ready
+                }
+              }).catch(() => {});
             };
             source.connect(processor);
             processor.connect(inputCtx.destination);
@@ -171,17 +203,12 @@ export const useWAI = () => {
               transcriptionRef.current = { user: '', model: '' };
             }
 
-            // Handle Transcriptions
-            if (msg.serverContent?.inputTranscription?.text) {
-              transcriptionRef.current.user += msg.serverContent.inputTranscription.text;
-            }
-            if (msg.serverContent?.outputTranscription?.text) {
-              transcriptionRef.current.model += msg.serverContent.outputTranscription.text;
-            }
+            if (msg.serverContent?.inputTranscription?.text) transcriptionRef.current.user += msg.serverContent.inputTranscription.text;
+            if (msg.serverContent?.outputTranscription?.text) transcriptionRef.current.model += msg.serverContent.outputTranscription.text;
             if (msg.serverContent?.turnComplete) {
               const { user, model } = transcriptionRef.current;
-              if (user.trim()) addMessage('user', user);
-              if (model.trim()) addMessage('model', model);
+              if (user.trim()) addMessage('user', user, 'text', undefined, currentSessionId!);
+              if (model.trim()) addMessage('model', model, 'text', undefined, currentSessionId!);
               transcriptionRef.current = { user: '', model: '' };
             }
 
@@ -203,7 +230,7 @@ export const useWAI = () => {
             }
             if (msg.toolCall) {
               for (const fc of msg.toolCall.functionCalls) {
-                if (fc.name === 'generateImage') handleImageGen(fc.args.prompt);
+                if (fc.name === 'generateImage') handleImageGen(fc.args.prompt, currentSessionId!);
                 sessionPromise.then(s => s.sendToolResponse({
                   functionResponses: { id: fc.id, name: fc.name, response: { result: "Task complete." } }
                 }));
@@ -211,48 +238,45 @@ export const useWAI = () => {
             }
           },
           onclose: () => { setConnectionState(ConnectionState.DISCONNECTED); setIsSpeaking(false); },
-          onerror: (err: any) => { setConnectionState(ConnectionState.ERROR); }
+          onerror: (err: any) => { console.error("Connection Error:", err); setConnectionState(ConnectionState.ERROR); }
         }
       });
       sessionPromiseRef.current = sessionPromise;
-    } catch (e: any) { setConnectionState(ConnectionState.ERROR); }
-  }, [addMessage]);
+    } catch (e: any) { console.error("Setup Error:", e); setConnectionState(ConnectionState.ERROR); }
+  }, [addMessage, activeSessionId, createNewChat, updateMessage]);
 
   const sendTextMessage = async (text: string, imageData?: { data: string, mimeType: string }) => {
     if (!text.trim() && !imageData) return;
-    addMessage('user', text || "Analyzing Image Content");
+    let targetSessionId = activeSessionId;
+    if (!targetSessionId) targetSessionId = createNewChat();
+
+    addMessage('user', text || "Analyzing Image Content", 'text', undefined, targetSessionId);
     setIsProcessing(true);
+    
     try {
       const ai = new GoogleGenAI({ apiKey: getApiKey() });
       const contents: any[] = [{ role: 'user', parts: [{ text: text || "Provide detailed analysis of this image." }] }];
       if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
       
       const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview', // Most capable reasoning model
+        model: 'gemini-3-flash-preview', 
         contents,
         config: { 
           systemInstruction: SYSTEM_INSTRUCTION, 
-          // Combine Google Search for latest news and Function Calling for Images
-          tools: [{ functionDeclarations: [imageTool] }, { googleSearch: {} }] 
+          tools: [{ googleSearch: {} }, { functionDeclarations: [imageTool] }]
         }
       });
 
-      // Extract Grounding Sources (News/Info)
       let sources: GroundingSource[] = [];
       const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
-      if (chunks) {
-        sources = chunks
-          .map(c => ({ title: c.web?.title || 'Source Link', uri: c.web?.uri || '' }))
-          .filter(s => s.uri);
-      }
+      if (chunks) sources = chunks.map(c => ({ title: c.web?.title || 'Source Link', uri: c.web?.uri || '' })).filter(s => s.uri);
 
-      if (response.text) addMessage('model', response.text, 'text', sources.length > 0 ? sources : undefined);
+      if (response.text) addMessage('model', response.text, 'text', sources.length > 0 ? sources : undefined, targetSessionId);
       
-      // Handle Function Calls (Image Generation)
       const fc = response.candidates?.[0]?.content?.parts?.find(p => p.functionCall)?.functionCall;
-      if (fc && fc.name === 'generateImage') handleImageGen(fc.args.prompt);
+      if (fc && fc.name === 'generateImage') handleImageGen(fc.args.prompt, targetSessionId);
 
-    } catch(e: any) { addMessage('model', formatErrorMessage(e)); }
+    } catch(e: any) { addMessage('model', formatErrorMessage(e), 'text', undefined, targetSessionId); }
     finally { setIsProcessing(false); }
   };
 

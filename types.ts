@@ -14,7 +14,7 @@ export interface GroundingSource {
 export interface Message {
   id: string;
   role: 'user' | 'model';
-  type: 'text' | 'image';
+  type: 'text' | 'image' | 'loading-image';
   content: string;
   timestamp: Date;
   sources?: GroundingSource[];

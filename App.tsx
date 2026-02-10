@@ -234,7 +234,7 @@ const App: React.FC = () => {
                     </div>
                     <div className={`flex flex-col ${m.role === 'user' ? 'items-end' : 'items-start'}`}>
                       <div className={`px-5 py-4 rounded-2xl ${m.role === 'user' ? 'bg-slate-100 dark:bg-white/10 border border-slate-200 dark:border-white/10 shadow-sm' : 'bg-transparent'}`}>
-                        {m.type === 'text' ? (
+                        {m.type === 'text' && (
                           <div className={`space-y-4 ${isRTL(m.content) ? 'rtl text-right font-urdu' : 'text-left'}`}>
                             <div className={`text-[15px] leading-relaxed font-semibold ${textColor}`}>{renderContent(m.content, m.id)}</div>
                             
@@ -253,26 +253,36 @@ const App: React.FC = () => {
                                 </div>
                               </div>
                             )}
-
-                          </div>
-                        ) : (
-                          <div className="space-y-4">
-                             <div className={`rounded-2xl border ${borderCol} bg-slate-50 dark:bg-white/5 p-1.5 shadow-2xl overflow-hidden relative group`}>
-                               <img src={m.content} alt="AI Art" className="w-full max-h-[550px] object-contain rounded-xl" />
-                               <div className="absolute inset-0 bg-black/40 opacity-0 group-hover:opacity-100 flex items-center justify-center transition-all">
-                                 <a href={m.content} download={`keshra-${m.id}.png`} className="p-4 bg-white text-black rounded-full shadow-2xl scale-75 group-hover:scale-100 transition-transform">
-                                   <Download className="w-6 h-6" />
-                                 </a>
-                               </div>
-                             </div>
                           </div>
                         )}
+                        
+                        {m.type === 'image' && (
+                          <div className="space-y-3">
+                             <div className={`rounded-2xl border ${borderCol} bg-slate-50 dark:bg-white/5 p-1.5 shadow-xl`}>
+                               <img src={m.content} alt="AI Art" className="w-full max-h-[550px] object-contain rounded-xl" />
+                             </div>
+                             <a href={m.content} download={`keshra-${m.id}.png`} 
+                                className={`flex items-center justify-center gap-2 w-full p-3 rounded-xl border ${borderCol} hover:bg-slate-50 dark:hover:bg-white/5 transition-all text-sm font-bold ${textColor}`}>
+                                <Download className="w-4 h-4" /> Download Image
+                             </a>
+                          </div>
+                        )}
+
+                        {m.type === 'loading-image' && (
+                          <div className={`w-[300px] aspect-square rounded-2xl border ${borderCol} bg-slate-50 dark:bg-white/5 flex flex-col items-center justify-center p-6 gap-4 animate-pulse`}>
+                             <div className="w-16 h-16 rounded-full bg-cyan-600/20 flex items-center justify-center">
+                               <Sparkles className="w-8 h-8 text-cyan-600 animate-spin" />
+                             </div>
+                             <p className={`text-xs font-black uppercase tracking-widest ${secondaryTextColor}`}>Creating your masterpiece...</p>
+                          </div>
+                        )}
+
                       </div>
                     </div>
                   </div>
                 </div>
               ))}
-              {isProcessing && (
+              {isProcessing && !messages.some(m => m.type === 'loading-image') && (
                 <div className="flex justify-start mb-8 px-4">
                   <div className={`flex gap-3 items-center px-5 py-3 bg-slate-50 dark:bg-white/5 rounded-2xl border ${borderCol}`}>
                     <Loader2 className="w-4 h-4 text-cyan-600 animate-spin" />
@@ -320,7 +330,6 @@ const App: React.FC = () => {
                 </div>
               </div>
             </div>
-            <p className={`mt-4 text-center text-[9px] font-black uppercase tracking-[0.3em] ${secondaryTextColor}`}>Master AI Developed by Wajid Ali • Peshawar, PK</p>
           </div>
         </div>
       </main>
