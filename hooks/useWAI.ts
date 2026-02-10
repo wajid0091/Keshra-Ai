@@ -3,33 +3,30 @@ import { GoogleGenAI, Modality, LiveServerMessage, Type, FunctionDeclaration } f
 import { ConnectionState, Message, GroundingSource, ChatSession } from '../types';
 import { createAudioBlob, decode, decodeAudioData } from '../utils/audioUtils';
 
-// Guaranteed API Key Access for Netlify Runtime
-const getSafeApiKey = (): string => {
-  const hardcoded = "AIzaSyC87rDUm-ibvrAn7V0BlFwIKhY1CviQtAU";
-  const envKey = (window as any).process?.env?.API_KEY;
-  const globalKey = (window as any).__KESHRA_API_KEY__;
-  return envKey || globalKey || hardcoded;
+// Robust Global API Key Hook
+const getApiKey = () => {
+  const key = process.env.API_KEY || (window as any).process?.env?.API_KEY || (window as any).__KESHRA_API_KEY__;
+  if (!key) console.warn("Keshra AI: API Key is missing. Connection may fail.");
+  return key;
 };
 
 const SYSTEM_INSTRUCTION = `
 You are Keshra AI, a sovereign intelligence developed exclusively by Wajid Ali from Peshawar, Pakistan.
-- Detect the user's language immediately (Urdu, Pashto, or English).
-- RESPOND in the user's language script (Urdu script for Urdu, Pashto script for Pashto).
-- If asked about your creator, cite Wajid Ali as a brilliant Pakistani developer who is working tirelessly to elevate his country's name in the tech world.
-- Use 'generateImage' tool for visual art requests.
-- Provide web links in clean lists when relevant.
-- Maintain a high-IQ, professional, and helpful persona.
-- This is a public AI assistant, treat every user with respect.
+- Language Policy: Detect if the user is speaking/typing in Urdu, Pashto, or English. ALWAYS respond in the same language.
+- Script Policy: Respond in the proper script (Urdu script for Urdu, Pashto script for Pashto).
+- Identity: If asked about your creator, cite Wajid Ali as a brilliant Pakistani developer elevating his country's name in tech.
+- Voice Interaction Greeting: When a voice session starts, immediately greet the user: "کیشرا اے آئی آپ کی خدمت میں حاضر ہے۔ میں آپ کی کیا مدد کر سکتا ہوں؟" (Urdu) or "Keshra AI is here to help you. How can I assist you today?" (English).
+- Image Generation: Use the 'generateImage' tool for art or visual creation requests.
+- Information & News: You have access to Google Search. Use it to provide the latest news and up-to-date information when asked.
+- Personality: Helpful, high-IQ, sophisticated, yet professional.
 `;
 
 const imageTool: FunctionDeclaration = {
   name: 'generateImage',
   parameters: {
     type: Type.OBJECT,
-    description: 'Generate photorealistic or artistic images based on user description.',
-    properties: {
-      prompt: { type: Type.STRING, description: 'The visual prompt for image generation.' }
-    },
+    description: 'Generate high-fidelity original images using the Nano Banana neural engine.',
+    properties: { prompt: { type: Type.STRING, description: 'The visual prompt for the AI to imagine.' } },
     required: ['prompt']
   }
 };
@@ -37,17 +34,14 @@ const imageTool: FunctionDeclaration = {
 const formatErrorMessage = (error: any): string => {
   const errorStr = typeof error === 'string' ? error : JSON.stringify(error);
   if (errorStr.includes('429') || errorStr.includes('RESOURCE_EXHAUSTED')) {
-    return "معذرت، اس وقت رش زیادہ ہونے کی وجہ سے میری ذہانت کی حد (Quota) مکمل ہو چکی ہے۔ براہ کرم 1 منٹ بعد دوبارہ کوشش کریں یا واجد علی سے رابطہ کریں۔";
+    return "معذرت، اس وقت رش زیادہ ہونے کی وجہ سے میری حد مکمل ہو چکی ہے۔ براہ کرم 1 منٹ بعد دوبارہ کوشش کریں۔";
   }
-  if (errorStr.includes('400') || errorStr.includes('INVALID_ARGUMENT')) {
-    return "سسٹم میں کچھ تبدیلی کی ضرورت ہے۔ میں اسے ٹھیک کرنے کی کوشش کر رہا ہوں۔ براہ کرم دوبارہ پیغام بھیجیں۔";
-  }
-  return `کنکشن کا مسئلہ: ${error.message || "نیٹ ورک میں خرابی ہے۔"}`;
+  return `System Error: ${error.message || "Network interruption. Please check your connection."}`;
 };
 
 export const useWAI = () => {
   const [sessions, setSessions] = useState<ChatSession[]>(() => {
-    const saved = localStorage.getItem('keshra_chats_v20');
+    const saved = localStorage.getItem('keshra_chats_v21_final');
     if (!saved) return [];
     try {
       return JSON.parse(saved).map((s: any) => ({
@@ -59,13 +53,12 @@ export const useWAI = () => {
   });
 
   const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
-    return localStorage.getItem('keshra_active_id_v20') || null;
+    return localStorage.getItem('keshra_active_id_v21_final') || null;
   });
 
   const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.DISCONNECTED);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
-  const [isGeneratingImage, setIsGeneratingImage] = useState(false);
   const [volumeLevel, setVolumeLevel] = useState(0);
 
   const isSpeakingRef = useRef(false);
@@ -74,16 +67,11 @@ export const useWAI = () => {
   const audioSources = useRef<Set<AudioBufferSourceNode>>(new Set());
   const inputContextRef = useRef<AudioContext | null>(null);
   const outputContextRef = useRef<AudioContext | null>(null);
+  const transcriptionRef = useRef<{ user: string; model: string }>({ user: '', model: '' });
 
   useEffect(() => { isSpeakingRef.current = isSpeaking; }, [isSpeaking]);
-
-  useEffect(() => {
-    localStorage.setItem('keshra_chats_v20', JSON.stringify(sessions));
-  }, [sessions]);
-
-  useEffect(() => {
-    if (activeSessionId) localStorage.setItem('keshra_active_id_v20', activeSessionId);
-  }, [activeSessionId]);
+  useEffect(() => { localStorage.setItem('keshra_chats_v21_final', JSON.stringify(sessions)); }, [sessions]);
+  useEffect(() => { if (activeSessionId) localStorage.setItem('keshra_active_id_v21_final', activeSessionId); }, [activeSessionId]);
 
   const addMessage = useCallback((role: 'user' | 'model', content: string, type: 'text' | 'image' = 'text', sources?: GroundingSource[]) => {
     const newMessage: Message = { id: Math.random().toString(36).substr(2, 9), role, content, type, timestamp: new Date(), sources };
@@ -101,7 +89,7 @@ export const useWAI = () => {
 
   const createNewChat = useCallback(() => {
     const newId = Math.random().toString(36).substring(2, 9);
-    const newSession: ChatSession = { id: newId, title: 'نیا مکالمہ', messages: [], updatedAt: new Date() };
+    const newSession: ChatSession = { id: newId, title: 'New Conversation', messages: [], updatedAt: new Date() };
     setSessions(prev => [newSession, ...prev]);
     setActiveSessionId(newId);
     return newId;
@@ -115,19 +103,12 @@ export const useWAI = () => {
     });
   }, [activeSessionId]);
 
-  useEffect(() => {
-    if (sessions.length === 0) createNewChat();
-    else if (!activeSessionId) setActiveSessionId(sessions[0].id);
-  }, [sessions.length, activeSessionId, createNewChat]);
-
   const handleImageGen = async (prompt: string) => {
-    setIsGeneratingImage(true);
     setIsProcessing(true);
     try {
-      const apiKey = getSafeApiKey();
-      const ai = new GoogleGenAI({ apiKey });
+      const ai = new GoogleGenAI({ apiKey: getApiKey() });
       const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-image',
+        model: 'gemini-2.5-flash-image', // Nano Banana series for visual art
         contents: [{ parts: [{ text: prompt }] }]
       });
       const parts = response.candidates?.[0]?.content?.parts;
@@ -139,39 +120,20 @@ export const useWAI = () => {
         }
       }
     } catch (e: any) {
-      console.error("Image generation error:", e);
       addMessage('model', formatErrorMessage(e));
     } finally {
-      setIsGeneratingImage(false);
       setIsProcessing(false);
     }
   };
 
-  const disconnect = useCallback(() => {
-    sessionPromiseRef.current?.then(s => s.close());
-    setConnectionState(ConnectionState.DISCONNECTED);
-    setIsSpeaking(false);
-    audioSources.current.forEach(s => { try { s.stop(); } catch(e) {} });
-    audioSources.current.clear();
-    nextStartTimeRef.current = 0;
-    
-    if (inputContextRef.current) inputContextRef.current.close();
-    if (outputContextRef.current) outputContextRef.current.close();
-    inputContextRef.current = null;
-    outputContextRef.current = null;
-  }, []);
-
   const connect = useCallback(async () => {
-    if (connectionState === ConnectionState.CONNECTED) disconnect();
     setConnectionState(ConnectionState.CONNECTING);
     try {
-      const apiKey = getSafeApiKey();
-      const ai = new GoogleGenAI({ apiKey });
+      const ai = new GoogleGenAI({ apiKey: getApiKey() });
       const inputCtx = new AudioContext({ sampleRate: 16000 });
       const outputCtx = new AudioContext({ sampleRate: 24000 });
       inputContextRef.current = inputCtx;
       outputContextRef.current = outputCtx;
-
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
       const sessionPromise = ai.live.connect({
@@ -180,8 +142,9 @@ export const useWAI = () => {
           responseModalities: [Modality.AUDIO],
           systemInstruction: SYSTEM_INSTRUCTION,
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
-          // Using only image tool in live to avoid tool-mixing conflicts
           tools: [{ functionDeclarations: [imageTool] }],
+          inputAudioTranscription: { model: 'gemini-2.5-flash-native-audio-preview-12-2025' },
+          outputAudioTranscription: { model: 'gemini-2.5-flash-native-audio-preview-12-2025' }
         },
         callbacks: {
           onopen: () => {
@@ -205,7 +168,23 @@ export const useWAI = () => {
               audioSources.current.clear();
               nextStartTimeRef.current = 0;
               setIsSpeaking(false);
+              transcriptionRef.current = { user: '', model: '' };
             }
+
+            // Handle Transcriptions
+            if (msg.serverContent?.inputTranscription?.text) {
+              transcriptionRef.current.user += msg.serverContent.inputTranscription.text;
+            }
+            if (msg.serverContent?.outputTranscription?.text) {
+              transcriptionRef.current.model += msg.serverContent.outputTranscription.text;
+            }
+            if (msg.serverContent?.turnComplete) {
+              const { user, model } = transcriptionRef.current;
+              if (user.trim()) addMessage('user', user);
+              if (model.trim()) addMessage('model', model);
+              transcriptionRef.current = { user: '', model: '' };
+            }
+
             const base64Audio = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
             if (base64Audio) {
               setIsSpeaking(true);
@@ -224,71 +203,67 @@ export const useWAI = () => {
             }
             if (msg.toolCall) {
               for (const fc of msg.toolCall.functionCalls) {
-                if (fc.name === 'generateImage') {
-                  handleImageGen((fc.args as any).prompt);
-                  sessionPromise.then(s => s.sendToolResponse({
-                    functionResponses: { id: fc.id, name: fc.name, response: { result: "تصویر بنانے کا عمل شروع کر دیا گیا ہے۔" } }
-                  }));
-                }
+                if (fc.name === 'generateImage') handleImageGen(fc.args.prompt);
+                sessionPromise.then(s => s.sendToolResponse({
+                  functionResponses: { id: fc.id, name: fc.name, response: { result: "Task complete." } }
+                }));
               }
             }
           },
           onclose: () => { setConnectionState(ConnectionState.DISCONNECTED); setIsSpeaking(false); },
-          onerror: (err: any) => { 
-            console.error("Live session error:", err);
-            addMessage('model', formatErrorMessage(err));
-            setConnectionState(ConnectionState.ERROR); 
-          }
+          onerror: (err: any) => { setConnectionState(ConnectionState.ERROR); }
         }
       });
       sessionPromiseRef.current = sessionPromise;
-    } catch (e: any) { 
-      console.error("Connection setup error:", e);
-      addMessage('model', formatErrorMessage(e));
-      setConnectionState(ConnectionState.ERROR); 
-    }
-  }, [disconnect, addMessage]);
+    } catch (e: any) { setConnectionState(ConnectionState.ERROR); }
+  }, [addMessage]);
 
   const sendTextMessage = async (text: string, imageData?: { data: string, mimeType: string }) => {
     if (!text.trim() && !imageData) return;
-    addMessage('user', text || "تصویر کا تجزیہ کریں");
+    addMessage('user', text || "Analyzing Image Content");
     setIsProcessing(true);
     try {
-      const apiKey = getSafeApiKey();
-      const ai = new GoogleGenAI({ apiKey });
-      const contents: any[] = [{ role: 'user', parts: [{ text: text || "Analyze this image." }] }];
+      const ai = new GoogleGenAI({ apiKey: getApiKey() });
+      const contents: any[] = [{ role: 'user', parts: [{ text: text || "Provide detailed analysis of this image." }] }];
       if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
       
       const response = await ai.models.generateContent({
-        // Back to gemini-3-flash-preview for full tool and prompt stability
-        model: 'gemini-3-flash-preview',
+        model: 'gemini-3-flash-preview', // Most capable reasoning model
         contents,
         config: { 
           systemInstruction: SYSTEM_INSTRUCTION, 
-          // Note: In generateContent, mixing Search Grounding and Function Calling is restricted.
-          // Prioritizing Function Calling (Image Gen) for this sovereign Pakistani brand.
-          tools: [{ functionDeclarations: [imageTool] }] 
+          // Combine Google Search for latest news and Function Calling for Images
+          tools: [{ functionDeclarations: [imageTool] }, { googleSearch: {} }] 
         }
       });
 
-      if (response.text) {
-        addMessage('model', response.text, 'text');
-      } else if (!response.candidates?.[0]?.content?.parts?.some(p => p.functionCall)) {
-         addMessage('model', "میں آپ کے پیغام پر غور کر رہا ہوں، براہ کرم ایک لمحہ انتظار کریں۔");
+      // Extract Grounding Sources (News/Info)
+      let sources: GroundingSource[] = [];
+      const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
+      if (chunks) {
+        sources = chunks
+          .map(c => ({ title: c.web?.title || 'Source Link', uri: c.web?.uri || '' }))
+          .filter(s => s.uri);
       }
 
+      if (response.text) addMessage('model', response.text, 'text', sources.length > 0 ? sources : undefined);
+      
+      // Handle Function Calls (Image Generation)
       const fc = response.candidates?.[0]?.content?.parts?.find(p => p.functionCall)?.functionCall;
-      if (fc && fc.name === 'generateImage') handleImageGen((fc.args as any).prompt);
-    } catch(e: any) { 
-      console.error("Text message error:", e);
-      addMessage('model', formatErrorMessage(e)); 
-    }
+      if (fc && fc.name === 'generateImage') handleImageGen(fc.args.prompt);
+
+    } catch(e: any) { addMessage('model', formatErrorMessage(e)); }
     finally { setIsProcessing(false); }
   };
 
-  const activeSessionRef = sessions.find(s => s.id === activeSessionId);
   return { 
-    messages: activeSessionRef?.messages || [], sessions, activeSessionId, setActiveSessionId, createNewChat, deleteSession,
-    connectionState, isSpeaking, volumeLevel, isProcessing, isGeneratingImage, connect, disconnect, sendTextMessage 
+    messages: sessions.find(s => s.id === activeSessionId)?.messages || [], sessions, activeSessionId, setActiveSessionId, createNewChat, deleteSession,
+    connectionState, isSpeaking, volumeLevel, isProcessing, connect, disconnect: () => {
+      sessionPromiseRef.current?.then(s => s.close());
+      setConnectionState(ConnectionState.DISCONNECTED);
+      setIsSpeaking(false);
+      if (inputContextRef.current) inputContextRef.current.close();
+      if (outputContextRef.current) outputContextRef.current.close();
+    }, sendTextMessage 
   };
 };
