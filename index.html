@@ -23,15 +23,6 @@
         background: #0891b2;
         color: white;
       }
-      @keyframes pulse-ring {
-        0% { transform: scale(0.33); }
-        80%, 100% { opacity: 0; }
-      }
-      @keyframes pulse-dot {
-        0% { transform: scale(0.8); }
-        50% { transform: scale(1); }
-        100% { transform: scale(0.8); }
-      }
       .custom-scrollbar::-webkit-scrollbar { width: 2px; }
       .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
       .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.05); border-radius: 10px; }
@@ -40,23 +31,9 @@
       .scrollbar-hide::-webkit-scrollbar { display: none; }
     </style>
     <script>
-      // CRITICAL FIX FOR NETLIFY: Pre-define process.env before any scripts execute
-      (function() {
-        // Fallback key provided for resilience
-        const FALLBACK_KEY = "AIzaSyC87rDUm-ibvrAn7V0BlFwIKhY1CviQtAU";
-        
-        window.process = window.process || {};
-        window.process.env = window.process.env || {};
-        
-        // priority: existing env var > window global > fallback
-        const existingKey = window.process.env.API_KEY;
-        if (!existingKey || existingKey.trim() === '') {
-          window.process.env.API_KEY = FALLBACK_KEY;
-        }
-        
-        // Global hook for extreme resilience in the React app
-        window.__KESHRA_API_KEY__ = window.process.env.API_KEY;
-      })();
+      // Essential shim for process.env to prevent runtime errors if bundler doesn't inject it globally
+      window.process = window.process || {};
+      window.process.env = window.process.env || {};
     </script>
     <script type="importmap">
 {

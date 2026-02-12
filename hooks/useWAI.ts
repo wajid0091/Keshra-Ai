@@ -5,17 +5,28 @@ import { createAudioBlob, decode, decodeAudioData } from '../utils/audioUtils';
 
 // Robust Global API Key Hook
 const getApiKey = () => {
-  // Check all possible locations for the key
-  const key = 
-    (window as any).__KESHRA_API_KEY__ || 
-    process.env.API_KEY || 
-    (window as any).process?.env?.API_KEY;
-
-  if (!key) {
-    console.error("Keshra AI Critical Error: API Key is missing.");
-    return "";
+  // 1. Check for standard process.env.API_KEY (replaced by bundler)
+  // This is the primary method for Netlify and standard builds.
+  if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
+    const key = process.env.API_KEY;
+    if (key && key.trim().length > 0 && !key.includes("placeholder")) {
+      return key;
+    }
   }
-  return key;
+
+  // 2. Fallback check for window global if injected via script
+  if ((window as any).__KESHRA_API_KEY__) {
+    return (window as any).__KESHRA_API_KEY__;
+  }
+  
+  // 3. Fallback: Check for other common prefixes if the bundler didn't map API_KEY
+  if (typeof process !== 'undefined' && process.env) {
+      if (process.env.REACT_APP_API_KEY) return process.env.REACT_APP_API_KEY;
+      if (process.env.VITE_API_KEY) return process.env.VITE_API_KEY;
+  }
+
+  console.warn("Keshra AI: API Key not found in environment.");
+  return "";
 };
 
 const SYSTEM_INSTRUCTION = `
@@ -41,6 +52,10 @@ const imageTool: FunctionDeclaration = {
 
 const formatErrorMessage = (error: any): string => {
   const errorStr = typeof error === 'string' ? error : JSON.stringify(error);
+  console.error("Keshra AI Error:", errorStr);
+  if (errorStr.includes('403') || errorStr.includes('API key not valid')) {
+    return "Security Alert: API Key is invalid or missing. Please check configuration.";
+  }
   if (errorStr.includes('429') || errorStr.includes('RESOURCE_EXHAUSTED')) {
     return "Traffic is high. My neural capacity is momentarily full. Please try again in 30 seconds.";
   }
@@ -134,7 +149,10 @@ export const useWAI = () => {
     
     setIsProcessing(true);
     try {
-      const ai = new GoogleGenAI({ apiKey: getApiKey() });
+      const apiKey = getApiKey();
+      if (!apiKey) throw new Error("API Key missing");
+      
+      const ai = new GoogleGenAI({ apiKey });
       const response = await ai.models.generateContent({
         model: 'gemini-2.5-flash-image', 
         contents: [{ parts: [{ text: prompt }] }]
@@ -160,19 +178,30 @@ export const useWAI = () => {
   };
 
   const connect = useCallback(async () => {
+    const apiKey = getApiKey();
+    if (!apiKey) {
+      alert("API Key is missing. Please configure it in Netlify environment variables as API_KEY.");
+      return;
+    }
+
     setConnectionState(ConnectionState.CONNECTING);
     let currentSessionId = activeSessionId;
     if (!currentSessionId) currentSessionId = createNewChat();
 
     try {
-      const ai = new GoogleGenAI({ apiKey: getApiKey() });
+      const ai = new GoogleGenAI({ apiKey });
       const inputCtx = new AudioContext({ sampleRate: 16000 });
       const outputCtx = new AudioContext({ sampleRate: 24000 });
+      
+      // Critical for mobile/tablet: Resume context after user interaction
+      await inputCtx.resume();
+      await outputCtx.resume();
+
       inputContextRef.current = inputCtx;
       outputContextRef.current = outputCtx;
+      
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
-      // Note: Live API currently works best with a single tool set. Prioritizing Search for Assistant capabilities.
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         config: {
@@ -245,6 +274,12 @@ export const useWAI = () => {
   }, [addMessage, activeSessionId, createNewChat, updateMessage]);
 
   const sendTextMessage = async (text: string, imageData?: { data: string, mimeType: string }) => {
+    const apiKey = getApiKey();
+    if (!apiKey) {
+      alert("API Key is missing. Check environment configuration.");
+      return;
+    }
+
     if (!text.trim() && !imageData) return;
     let targetSessionId = activeSessionId;
     if (!targetSessionId) targetSessionId = createNewChat();
@@ -262,7 +297,7 @@ export const useWAI = () => {
       : [{ googleSearch: {} }];
 
     try {
-      const ai = new GoogleGenAI({ apiKey: getApiKey() });
+      const ai = new GoogleGenAI({ apiKey });
       const contents: any[] = [{ role: 'user', parts: [{ text: text || "Provide detailed analysis of this image." }] }];
       if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
       
