@@ -56,8 +56,8 @@ const imageTool: FunctionDeclaration = {
   name: 'generateImage',
   parameters: {
     type: Type.OBJECT,
-    description: 'Generate high-fidelity original images using the Nano Banana neural engine.',
-    properties: { prompt: { type: Type.STRING, description: 'The visual prompt for the AI to imagine.' } },
+    description: 'Generates a high-quality image based on the user prompt.',
+    properties: { prompt: { type: Type.STRING, description: 'The visual description of the image to generate.' } },
     required: ['prompt']
   }
 };
@@ -167,30 +167,70 @@ export const useWAI = () => {
     addMessage('model', 'Creating your masterpiece...', 'loading-image', undefined, sessionId, placeholderId);
     
     setIsProcessing(true);
+    const apiKey = getApiKey();
+    if (!apiKey) {
+        updateMessage(sessionId, placeholderId, { type: 'text', content: "API Key is missing (VITE_API_KEY not found)." });
+        setIsProcessing(false);
+        return;
+    }
+
+    const ai = new GoogleGenAI({ apiKey });
+
     try {
-      const apiKey = getApiKey();
-      if (!apiKey) throw new Error("API Key is missing (VITE_API_KEY not found).");
-      
-      const ai = new GoogleGenAI({ apiKey });
-      const response = await ai.models.generateContent({
-        model: 'gemini-2.5-flash-image', 
-        contents: [{ parts: [{ text: prompt }] }]
-      });
-      const parts = response.candidates?.[0]?.content?.parts;
-      if (parts) {
-        for (const part of parts) {
-          if (part.inlineData) {
-            updateMessage(sessionId, placeholderId, {
-              type: 'image',
-              content: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`
-            });
-            return; 
-          }
+      // Primary Method: Gemini 2.5 Flash Image
+      // This is the default "Nano Banana" model for image generation.
+      try {
+        const response = await ai.models.generateContent({
+            model: 'gemini-2.5-flash-image', 
+            contents: [{ parts: [{ text: prompt }] }]
+        });
+        
+        const parts = response.candidates?.[0]?.content?.parts;
+        let imageFound = false;
+
+        if (parts) {
+            for (const part of parts) {
+            if (part.inlineData) {
+                updateMessage(sessionId, placeholderId, {
+                    type: 'image',
+                    content: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`
+                });
+                imageFound = true;
+                setIsProcessing(false);
+                return; 
+            }
+            }
         }
+        if (!imageFound) throw new Error("No image data returned from Gemini 2.5");
+      } catch (primaryErr) {
+        console.warn("Gemini 2.5 failed, switching to Imagen 3 fallback:", primaryErr);
+        
+        // Fallback Method: Imagen 3.0
+        // If Gemini 2.5 fails (quota, availability, or text response), try dedicated Imagen model.
+        const response = await ai.models.generateImages({
+            model: 'imagen-3.0-generate-001',
+            prompt: prompt,
+            config: {
+                numberOfImages: 1,
+                aspectRatio: '1:1',
+                outputMimeType: 'image/jpeg'
+            }
+        });
+        
+        const b64 = response.generatedImages?.[0]?.image?.imageBytes;
+        if (b64) {
+            updateMessage(sessionId, placeholderId, {
+                type: 'image',
+                content: `data:image/jpeg;base64,${b64}`
+            });
+            setIsProcessing(false);
+            return;
+        }
+        throw new Error("Fallback generation failed.");
       }
-      updateMessage(sessionId, placeholderId, { type: 'text', content: "I couldn't generate an image at this moment." });
+
     } catch (e: any) {
-      updateMessage(sessionId, placeholderId, { type: 'text', content: formatErrorMessage(e) });
+      updateMessage(sessionId, placeholderId, { type: 'text', content: `Unable to generate image: ${formatErrorMessage(e)}` });
     } finally {
       setIsProcessing(false);
     }
