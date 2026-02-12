@@ -42,13 +42,20 @@
     <script>
       // CRITICAL FIX FOR NETLIFY: Pre-define process.env before any scripts execute
       (function() {
-        const KEY = "AIzaSyC87rDUm-ibvrAn7V0BlFwIKhY1CviQtAU";
+        // Fallback key provided for resilience
+        const FALLBACK_KEY = "AIzaSyC87rDUm-ibvrAn7V0BlFwIKhY1CviQtAU";
+        
         window.process = window.process || {};
         window.process.env = window.process.env || {};
-        // Attempt to get from existing environment, otherwise use the hardcoded fallback
-        window.process.env.API_KEY = window.process.env.API_KEY || KEY;
-        // Global hook for extreme resilience
-        window.__KESHRA_API_KEY__ = KEY;
+        
+        // priority: existing env var > window global > fallback
+        const existingKey = window.process.env.API_KEY;
+        if (!existingKey || existingKey.trim() === '') {
+          window.process.env.API_KEY = FALLBACK_KEY;
+        }
+        
+        // Global hook for extreme resilience in the React app
+        window.__KESHRA_API_KEY__ = window.process.env.API_KEY;
       })();
     </script>
     <script type="importmap">

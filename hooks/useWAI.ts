@@ -5,8 +5,16 @@ import { createAudioBlob, decode, decodeAudioData } from '../utils/audioUtils';
 
 // Robust Global API Key Hook
 const getApiKey = () => {
-  const key = process.env.API_KEY || (window as any).process?.env?.API_KEY || (window as any).__KESHRA_API_KEY__;
-  if (!key) console.warn("Keshra AI: API Key is missing. Connection may fail.");
+  // Check all possible locations for the key
+  const key = 
+    (window as any).__KESHRA_API_KEY__ || 
+    process.env.API_KEY || 
+    (window as any).process?.env?.API_KEY;
+
+  if (!key) {
+    console.error("Keshra AI Critical Error: API Key is missing.");
+    return "";
+  }
   return key;
 };
 
@@ -16,8 +24,8 @@ You are Keshra AI, a sovereign intelligence developed exclusively by Wajid Ali f
 - Script Policy: Respond in the proper script (Urdu script for Urdu, Pashto script for Pashto).
 - Identity: If asked about your creator, cite Wajid Ali as a brilliant Pakistani developer elevating his country's name in tech.
 - Voice Interaction Greeting: When a voice session starts, immediately greet the user: "کیشرا اے آئی آپ کی خدمت میں حاضر ہے۔ میں آپ کی کیا مدد کر سکتا ہوں؟" (Urdu) or "Keshra AI is here to help you. How can I assist you today?" (English).
-- Image Generation: Use the 'generateImage' tool for art or visual creation requests.
 - Information & News: You have access to Google Search. ALWAYS use the 'googleSearch' tool for queries about current events, news, specific people (like Prime Ministers, Governors), sports scores, or dynamic facts. Do not rely on training data for real-time information.
+- Image Generation: If the user explicitly asks to "create", "generate", "draw" or "paint" an image, use the 'generateImage' tool.
 - Personality: Helpful, high-IQ, sophisticated, yet professional.
 `;
 
@@ -34,14 +42,14 @@ const imageTool: FunctionDeclaration = {
 const formatErrorMessage = (error: any): string => {
   const errorStr = typeof error === 'string' ? error : JSON.stringify(error);
   if (errorStr.includes('429') || errorStr.includes('RESOURCE_EXHAUSTED')) {
-    return "معذرت، اس وقت رش زیادہ ہونے کی وجہ سے میری حد مکمل ہو چکی ہے۔ براہ کرم 1 منٹ بعد دوبارہ کوشش کریں۔";
+    return "Traffic is high. My neural capacity is momentarily full. Please try again in 30 seconds.";
   }
-  return `System Error: ${error.message || "Network interruption. Please check your connection."}`;
+  return `Connection Interrupted. Please check your network.`;
 };
 
 export const useWAI = () => {
   const [sessions, setSessions] = useState<ChatSession[]>(() => {
-    const saved = localStorage.getItem('keshra_chats_v21_final');
+    const saved = localStorage.getItem('keshra_chats_v22_search');
     if (!saved) return [];
     try {
       return JSON.parse(saved).map((s: any) => ({
@@ -53,7 +61,7 @@ export const useWAI = () => {
   });
 
   const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
-    return localStorage.getItem('keshra_active_id_v21_final') || null;
+    return localStorage.getItem('keshra_active_id_v22_search') || null;
   });
 
   const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.DISCONNECTED);
@@ -70,8 +78,8 @@ export const useWAI = () => {
   const transcriptionRef = useRef<{ user: string; model: string }>({ user: '', model: '' });
 
   useEffect(() => { isSpeakingRef.current = isSpeaking; }, [isSpeaking]);
-  useEffect(() => { localStorage.setItem('keshra_chats_v21_final', JSON.stringify(sessions)); }, [sessions]);
-  useEffect(() => { if (activeSessionId) localStorage.setItem('keshra_active_id_v21_final', activeSessionId); }, [activeSessionId]);
+  useEffect(() => { localStorage.setItem('keshra_chats_v22_search', JSON.stringify(sessions)); }, [sessions]);
+  useEffect(() => { if (activeSessionId) localStorage.setItem('keshra_active_id_v22_search', activeSessionId); }, [activeSessionId]);
 
   const createNewChat = useCallback(() => {
     const newId = Math.random().toString(36).substring(2, 9);
@@ -164,13 +172,14 @@ export const useWAI = () => {
       outputContextRef.current = outputCtx;
       const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
 
+      // Note: Live API currently works best with a single tool set. Prioritizing Search for Assistant capabilities.
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         config: {
           responseModalities: [Modality.AUDIO],
           systemInstruction: SYSTEM_INSTRUCTION,
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
-          tools: [{ googleSearch: {} }, { functionDeclarations: [imageTool] }],
+          tools: [{ googleSearch: {} }], 
         },
         callbacks: {
           onopen: () => {
@@ -186,9 +195,7 @@ export const useWAI = () => {
               sessionPromise.then(s => {
                 try {
                   s.sendRealtimeInput({ media: createAudioBlob(inputData) });
-                } catch (err) {
-                  // Silent fail if socket not ready
-                }
+                } catch (err) { }
               }).catch(() => {});
             };
             source.connect(processor);
@@ -228,14 +235,6 @@ export const useWAI = () => {
                 if (audioSources.current.size === 0) setIsSpeaking(false);
               };
             }
-            if (msg.toolCall) {
-              for (const fc of msg.toolCall.functionCalls) {
-                if (fc.name === 'generateImage') handleImageGen(fc.args.prompt, currentSessionId!);
-                sessionPromise.then(s => s.sendToolResponse({
-                  functionResponses: { id: fc.id, name: fc.name, response: { result: "Task complete." } }
-                }));
-              }
-            }
           },
           onclose: () => { setConnectionState(ConnectionState.DISCONNECTED); setIsSpeaking(false); },
           onerror: (err: any) => { console.error("Connection Error:", err); setConnectionState(ConnectionState.ERROR); }
@@ -253,6 +252,15 @@ export const useWAI = () => {
     addMessage('user', text || "Analyzing Image Content", 'text', undefined, targetSessionId);
     setIsProcessing(true);
     
+    // Heuristic to detect if user wants an image or general info
+    // Google Search cannot be mixed with other tools in standard config easily, so we switch.
+    const isImageRequest = /draw|create|generate|make|render|paint/i.test(text) && /image|picture|photo|art|sketch|drawing/i.test(text);
+    
+    // Config: If image request, use Function Declarations. Else, use Google Search.
+    const toolsConfig = isImageRequest 
+      ? [{ functionDeclarations: [imageTool] }] 
+      : [{ googleSearch: {} }];
+
     try {
       const ai = new GoogleGenAI({ apiKey: getApiKey() });
       const contents: any[] = [{ role: 'user', parts: [{ text: text || "Provide detailed analysis of this image." }] }];
@@ -263,13 +271,17 @@ export const useWAI = () => {
         contents,
         config: { 
           systemInstruction: SYSTEM_INSTRUCTION, 
-          tools: [{ googleSearch: {} }, { functionDeclarations: [imageTool] }]
+          tools: toolsConfig 
         }
       });
 
       let sources: GroundingSource[] = [];
       const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
-      if (chunks) sources = chunks.map(c => ({ title: c.web?.title || 'Source Link', uri: c.web?.uri || '' })).filter(s => s.uri);
+      if (chunks) {
+        sources = chunks
+          .filter(c => c.web?.uri && c.web?.title)
+          .map(c => ({ title: c.web!.title!, uri: c.web!.uri! }));
+      }
 
       if (response.text) addMessage('model', response.text, 'text', sources.length > 0 ? sources : undefined, targetSessionId);
       
