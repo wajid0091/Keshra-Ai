@@ -3,30 +3,30 @@ import { GoogleGenAI, Modality, LiveServerMessage, Type, FunctionDeclaration } f
 import { ConnectionState, Message, GroundingSource, ChatSession } from '../types';
 import { createAudioBlob, decode, decodeAudioData } from '../utils/audioUtils';
 
-// --- API Key Retrieval Strategy ---
+// --- Robust API Key Retrieval ---
 const getApiKey = (): string => {
-  // 1. Try VITE_API_KEY from import.meta.env (Standard Vite + Netlify)
+  // 1. Vite / Netlify (Most reliable for this setup)
   // @ts-ignore
-  if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_KEY) {
+  if (import.meta && import.meta.env && import.meta.env.VITE_API_KEY) {
     // @ts-ignore
     return import.meta.env.VITE_API_KEY;
   }
-  
-  // 2. Try API_KEY from import.meta.env (Alternative config)
+
+  // 2. Fallback for other environments
   // @ts-ignore
-  if (typeof import.meta !== 'undefined' && import.meta.env?.API_KEY) {
+  if (import.meta && import.meta.env && import.meta.env.API_KEY) {
     // @ts-ignore
     return import.meta.env.API_KEY;
   }
 
-  // 3. Try process.env (Webpack/Node/Shim fallback)
+  // 3. Process Env (Node/Webpack shims)
   if (typeof process !== 'undefined' && process.env) {
     if (process.env.VITE_API_KEY) return process.env.VITE_API_KEY;
     if (process.env.API_KEY) return process.env.API_KEY;
     if (process.env.REACT_APP_API_KEY) return process.env.REACT_APP_API_KEY;
   }
 
-  // 4. Window Injection (Last Resort)
+  // 4. Manual Window Injection
   if ((window as any).__KESHRA_API_KEY__) {
     return (window as any).__KESHRA_API_KEY__;
   }
@@ -63,15 +63,25 @@ const imageTool: FunctionDeclaration = {
 };
 
 const formatErrorMessage = (error: any): string => {
-  const errorStr = typeof error === 'string' ? error : JSON.stringify(error);
-  console.error("Keshra AI Error:", errorStr);
-  if (errorStr.includes('403') || errorStr.includes('API key not valid')) {
-    return "Security Alert: API Key is invalid or missing. Please check your Netlify settings.";
+  const errorStr = typeof error === 'string' ? error : JSON.stringify(error, Object.getOwnPropertyNames(error));
+  console.error("Keshra AI Logic Error:", errorStr);
+
+  // Specific handling for API Key issues
+  if (errorStr.includes('API key') || errorStr.includes('403') || errorStr.includes('PERMISSION_DENIED')) {
+    return "Authentication Failed: API Key is invalid or missing. Please check Netlify Environment Variables (VITE_API_KEY).";
   }
-  if (errorStr.includes('429') || errorStr.includes('503') || errorStr.includes('RESOURCE_EXHAUSTED')) {
-    return "System is currently at maximum capacity (Quota Limit). Please try again in a few moments.";
+  
+  // Specific handling for Quota/Rate Limits
+  if (errorStr.includes('429') || errorStr.includes('RESOURCE_EXHAUSTED')) {
+    return "High Traffic Warning: The AI model is currently at maximum capacity (429). Please wait a moment and try again.";
   }
-  return `Connection Interrupted. Please check your network.`;
+
+  // Server Overload
+  if (errorStr.includes('503') || errorStr.includes('Overloaded')) {
+    return "Server Busy: Google's AI services are experiencing high load. Retrying usually works.";
+  }
+
+  return "Connection could not be established. Please check your internet or try again.";
 };
 
 export const useWAI = () => {
@@ -162,7 +172,7 @@ export const useWAI = () => {
     setIsProcessing(true);
     try {
       const apiKey = getApiKey();
-      if (!apiKey) throw new Error("API Key is missing. Please check Netlify settings (VITE_API_KEY).");
+      if (!apiKey) throw new Error("API Key is missing (VITE_API_KEY not found).");
       
       const ai = new GoogleGenAI({ apiKey });
       const response = await ai.models.generateContent({
@@ -192,7 +202,7 @@ export const useWAI = () => {
   const connect = useCallback(async () => {
     const apiKey = getApiKey();
     if (!apiKey) {
-      alert("API Key is missing. Please check your Netlify environment variables (VITE_API_KEY).");
+      alert("System Alert: API Key is missing. Please check Netlify settings for VITE_API_KEY.");
       return;
     }
 
@@ -281,7 +291,8 @@ export const useWAI = () => {
           },
           onclose: () => { setConnectionState(ConnectionState.DISCONNECTED); setIsSpeaking(false); },
           onerror: (err: any) => { 
-            console.error("Connection Error:", err); 
+            console.error("Live Connection Error:", err); 
+            // Don't alert here to avoid spamming, just log
             setConnectionState(ConnectionState.ERROR); 
           }
         }
@@ -297,7 +308,7 @@ export const useWAI = () => {
   const sendTextMessage = async (text: string, imageData?: { data: string, mimeType: string }) => {
     const apiKey = getApiKey();
     if (!apiKey) {
-      alert("API Key is missing. Check Netlify settings.");
+      alert("API Key is missing. Check VITE_API_KEY in Netlify.");
       return;
     }
 
@@ -308,7 +319,6 @@ export const useWAI = () => {
     addMessage('user', text || "Analyzing Image Content", 'text', undefined, targetSessionId);
     setIsProcessing(true);
     
-    // Improved Regex for Image Generation vs Description
     const isImageRequest = /(?:create|generate|draw|paint|render|make|design|illustrate).*(?:image|picture|photo|art|sketch|drawing|logo|poster|portrait|scene|background|wallpaper)/i.test(text);
     
     const toolsConfig = isImageRequest 
