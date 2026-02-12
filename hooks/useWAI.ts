@@ -3,30 +3,35 @@ import { GoogleGenAI, Modality, LiveServerMessage, Type, FunctionDeclaration } f
 import { ConnectionState, Message, GroundingSource, ChatSession } from '../types';
 import { createAudioBlob, decode, decodeAudioData } from '../utils/audioUtils';
 
-// --- Single API Key Retrieval ---
+// --- API Key Retrieval Strategy ---
 const getApiKey = (): string => {
-  let key = "";
-  
-  // 1. Vite Environment (Priority)
+  // 1. Try VITE_API_KEY from import.meta.env (Standard Vite + Netlify)
   // @ts-ignore
-  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_KEY) {
+  if (typeof import.meta !== 'undefined' && import.meta.env?.VITE_API_KEY) {
     // @ts-ignore
-    key = import.meta.env.VITE_API_KEY;
+    return import.meta.env.VITE_API_KEY;
   }
   
-  // 2. Process Environment (Fallback)
-  if (!key && typeof process !== 'undefined' && process.env) {
-    if (process.env.VITE_API_KEY) key = process.env.VITE_API_KEY;
-    else if (process.env.REACT_APP_API_KEY) key = process.env.REACT_APP_API_KEY;
-    else if (process.env.API_KEY) key = process.env.API_KEY;
+  // 2. Try API_KEY from import.meta.env (Alternative config)
+  // @ts-ignore
+  if (typeof import.meta !== 'undefined' && import.meta.env?.API_KEY) {
+    // @ts-ignore
+    return import.meta.env.API_KEY;
   }
 
-  // 3. Window Injection (Last Resort)
-  if (!key && (window as any).__KESHRA_API_KEY__) {
-    key = (window as any).__KESHRA_API_KEY__;
+  // 3. Try process.env (Webpack/Node/Shim fallback)
+  if (typeof process !== 'undefined' && process.env) {
+    if (process.env.VITE_API_KEY) return process.env.VITE_API_KEY;
+    if (process.env.API_KEY) return process.env.API_KEY;
+    if (process.env.REACT_APP_API_KEY) return process.env.REACT_APP_API_KEY;
   }
 
-  return key;
+  // 4. Window Injection (Last Resort)
+  if ((window as any).__KESHRA_API_KEY__) {
+    return (window as any).__KESHRA_API_KEY__;
+  }
+
+  return "";
 };
 
 const SYSTEM_INSTRUCTION = `
@@ -61,7 +66,7 @@ const formatErrorMessage = (error: any): string => {
   const errorStr = typeof error === 'string' ? error : JSON.stringify(error);
   console.error("Keshra AI Error:", errorStr);
   if (errorStr.includes('403') || errorStr.includes('API key not valid')) {
-    return "Security Alert: API Key is invalid. Please check your settings.";
+    return "Security Alert: API Key is invalid or missing. Please check your Netlify settings.";
   }
   if (errorStr.includes('429') || errorStr.includes('503') || errorStr.includes('RESOURCE_EXHAUSTED')) {
     return "System is currently at maximum capacity (Quota Limit). Please try again in a few moments.";
@@ -157,7 +162,7 @@ export const useWAI = () => {
     setIsProcessing(true);
     try {
       const apiKey = getApiKey();
-      if (!apiKey) throw new Error("API Key is missing or invalid.");
+      if (!apiKey) throw new Error("API Key is missing. Please check Netlify settings (VITE_API_KEY).");
       
       const ai = new GoogleGenAI({ apiKey });
       const response = await ai.models.generateContent({
@@ -187,7 +192,7 @@ export const useWAI = () => {
   const connect = useCallback(async () => {
     const apiKey = getApiKey();
     if (!apiKey) {
-      alert("API Key is missing. Please check your environment variables.");
+      alert("API Key is missing. Please check your Netlify environment variables (VITE_API_KEY).");
       return;
     }
 
@@ -292,7 +297,7 @@ export const useWAI = () => {
   const sendTextMessage = async (text: string, imageData?: { data: string, mimeType: string }) => {
     const apiKey = getApiKey();
     if (!apiKey) {
-      alert("API Key is missing. Check settings.");
+      alert("API Key is missing. Check Netlify settings.");
       return;
     }
 
