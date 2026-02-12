@@ -3,76 +3,30 @@ import { GoogleGenAI, Modality, LiveServerMessage, Type, FunctionDeclaration } f
 import { ConnectionState, Message, GroundingSource, ChatSession } from '../types';
 import { createAudioBlob, decode, decodeAudioData } from '../utils/audioUtils';
 
-// --- API Key Management System ---
-let apiKeys: string[] = [];
-let currentKeyIdx = 0;
-
-const initializeApiKeys = () => {
-  if (apiKeys.length > 0) return;
-
-  const candidates: string[] = [];
-  const add = (k: any) => {
-    if (k && typeof k === 'string' && k.trim().length > 10 && !k.includes('placeholder')) {
-      candidates.push(k.trim());
-    }
-  };
-
-  // 1. Check Vite 'import.meta.env' (Primary for Vite apps)
-  // @ts-ignore
-  if (typeof import.meta !== 'undefined' && import.meta.env) {
-    // @ts-ignore
-    add(import.meta.env.VITE_API_KEY);
-    // @ts-ignore
-    add(import.meta.env.VITE_API_KEY_1);
-    // @ts-ignore
-    add(import.meta.env.VITE_API_KEY_2);
-    // @ts-ignore
-    add(import.meta.env.API_KEY); 
-    // @ts-ignore
-    add(import.meta.env.API_KEY_1);
-    // @ts-ignore
-    add(import.meta.env.API_KEY_2);
-  }
-
-  // 2. Check 'process.env' (Netlify/Webpack/Standard)
-  if (typeof process !== 'undefined' && process.env) {
-    add(process.env.API_KEY);
-    add(process.env.API_KEY_1);
-    add(process.env.API_KEY_2);
-    add(process.env.VITE_API_KEY);
-    add(process.env.VITE_API_KEY_1);
-    add(process.env.VITE_API_KEY_2);
-    add(process.env.REACT_APP_API_KEY);
-    add(process.env.REACT_APP_API_KEY_1);
-  }
-
-  // 3. Fallback: Window Injection
-  add((window as any).__KESHRA_API_KEY__);
-
-  // Remove duplicates
-  apiKeys = [...new Set(candidates)];
+// --- Single API Key Retrieval ---
+const getApiKey = (): string => {
+  let key = "";
   
-  if (apiKeys.length === 0) {
-    console.warn("Keshra AI Warning: No valid API Keys found.");
-  } else {
-    console.log(`Keshra AI: Loaded ${apiKeys.length} API Keys.`);
+  // 1. Vite Environment (Priority)
+  // @ts-ignore
+  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_KEY) {
+    // @ts-ignore
+    key = import.meta.env.VITE_API_KEY;
   }
-};
-
-const getActiveKey = () => {
-  initializeApiKeys();
-  if (apiKeys.length === 0) return "";
-  return apiKeys[currentKeyIdx % apiKeys.length];
-};
-
-const rotateKey = () => {
-  initializeApiKeys();
-  if (apiKeys.length > 1) {
-    currentKeyIdx = (currentKeyIdx + 1) % apiKeys.length;
-    console.warn(`Quota Limit Detected. Switching to API Key Index: ${currentKeyIdx}`);
-    return true;
+  
+  // 2. Process Environment (Fallback)
+  if (!key && typeof process !== 'undefined' && process.env) {
+    if (process.env.VITE_API_KEY) key = process.env.VITE_API_KEY;
+    else if (process.env.REACT_APP_API_KEY) key = process.env.REACT_APP_API_KEY;
+    else if (process.env.API_KEY) key = process.env.API_KEY;
   }
-  return false;
+
+  // 3. Window Injection (Last Resort)
+  if (!key && (window as any).__KESHRA_API_KEY__) {
+    key = (window as any).__KESHRA_API_KEY__;
+  }
+
+  return key;
 };
 
 const SYSTEM_INSTRUCTION = `
@@ -107,10 +61,10 @@ const formatErrorMessage = (error: any): string => {
   const errorStr = typeof error === 'string' ? error : JSON.stringify(error);
   console.error("Keshra AI Error:", errorStr);
   if (errorStr.includes('403') || errorStr.includes('API key not valid')) {
-    return "Security Alert: API Key is invalid. Please check your configuration.";
+    return "Security Alert: API Key is invalid. Please check your settings.";
   }
   if (errorStr.includes('429') || errorStr.includes('503') || errorStr.includes('RESOURCE_EXHAUSTED')) {
-    return "High Traffic (Quota Limit). Switching secure lines... Please wait.";
+    return "System is currently at maximum capacity (Quota Limit). Please try again in a few moments.";
   }
   return `Connection Interrupted. Please check your network.`;
 };
@@ -196,14 +150,14 @@ export const useWAI = () => {
     });
   }, [activeSessionId]);
 
-  const handleImageGen = async (prompt: string, sessionId: string, retryCount = 0) => {
+  const handleImageGen = async (prompt: string, sessionId: string) => {
     const placeholderId = Math.random().toString(36).substr(2, 9);
     addMessage('model', 'Creating your masterpiece...', 'loading-image', undefined, sessionId, placeholderId);
     
     setIsProcessing(true);
     try {
-      const apiKey = getActiveKey();
-      if (!apiKey) throw new Error("API Key missing");
+      const apiKey = getApiKey();
+      if (!apiKey) throw new Error("API Key is missing or invalid.");
       
       const ai = new GoogleGenAI({ apiKey });
       const response = await ai.models.generateContent({
@@ -224,18 +178,6 @@ export const useWAI = () => {
       }
       updateMessage(sessionId, placeholderId, { type: 'text', content: "I couldn't generate an image at this moment." });
     } catch (e: any) {
-      const errorStr = String(e);
-      // Auto-switch key on quota error
-      if ((errorStr.includes('429') || errorStr.includes('503') || errorStr.includes('RESOURCE_EXHAUSTED')) && retryCount < 2) {
-        if (rotateKey()) {
-            console.log("Retrying Image Gen with new key...");
-             // Recursively retry
-             handleImageGen(prompt, sessionId, retryCount + 1);
-             // Remove failure placeholder
-             updateMessage(sessionId, placeholderId, { type: 'text', content: "Traffic high. Switched secure line. Retrying..." });
-             return; 
-        }
-      }
       updateMessage(sessionId, placeholderId, { type: 'text', content: formatErrorMessage(e) });
     } finally {
       setIsProcessing(false);
@@ -243,7 +185,7 @@ export const useWAI = () => {
   };
 
   const connect = useCallback(async () => {
-    let apiKey = getActiveKey();
+    const apiKey = getApiKey();
     if (!apiKey) {
       alert("API Key is missing. Please check your environment variables.");
       return;
@@ -335,13 +277,6 @@ export const useWAI = () => {
           onclose: () => { setConnectionState(ConnectionState.DISCONNECTED); setIsSpeaking(false); },
           onerror: (err: any) => { 
             console.error("Connection Error:", err); 
-            const errStr = String(err);
-            if (errStr.includes('429') || errStr.includes('503') || errStr.includes('RESOURCE_EXHAUSTED')) {
-                // If live connection dies due to quota, we can't easily auto-reconnect context in this flow,
-                // but we rotate the key so NEXT click works.
-                rotateKey(); 
-                alert("Connection Limit Reached. Switched to Backup Line. Please Tap Mic Again.");
-            }
             setConnectionState(ConnectionState.ERROR); 
           }
         }
@@ -349,25 +284,24 @@ export const useWAI = () => {
       sessionPromiseRef.current = sessionPromise;
     } catch (e: any) { 
       console.error("Setup Error:", e); 
-      const errStr = String(e);
-      if (errStr.includes('429') || errStr.includes('503') || errStr.includes('RESOURCE_EXHAUSTED')) {
-        rotateKey();
-        alert("Server Busy. Switched to backup line. Please press microphone again.");
-      } else {
-        alert(`Setup Failed: ${e.message}`);
-      }
+      alert(`Connection Failed: ${formatErrorMessage(e)}`);
       setConnectionState(ConnectionState.ERROR); 
     }
   }, [addMessage, activeSessionId, createNewChat, updateMessage]);
 
-  // Recursive function to handle retries for text messages
-  const sendTextMessageWithRetry = async (
-    text: string, 
-    imageData: { data: string, mimeType: string } | undefined,
-    targetSessionId: string,
-    retryCount = 0
-  ) => {
-    const apiKey = getActiveKey();
+  const sendTextMessage = async (text: string, imageData?: { data: string, mimeType: string }) => {
+    const apiKey = getApiKey();
+    if (!apiKey) {
+      alert("API Key is missing. Check settings.");
+      return;
+    }
+
+    if (!text.trim() && !imageData) return;
+    let targetSessionId = activeSessionId;
+    if (!targetSessionId) targetSessionId = createNewChat();
+
+    addMessage('user', text || "Analyzing Image Content", 'text', undefined, targetSessionId);
+    setIsProcessing(true);
     
     // Improved Regex for Image Generation vs Description
     const isImageRequest = /(?:create|generate|draw|paint|render|make|design|illustrate).*(?:image|picture|photo|art|sketch|drawing|logo|poster|portrait|scene|background|wallpaper)/i.test(text);
@@ -406,34 +340,10 @@ export const useWAI = () => {
       }
 
     } catch(e: any) { 
-        const errStr = String(e);
-        if ((errStr.includes('429') || errStr.includes('503') || errStr.includes('RESOURCE_EXHAUSTED')) && retryCount < 2) {
-            if (rotateKey()) {
-                console.log(`Retrying message (Attempt ${retryCount + 2})...`);
-                await sendTextMessageWithRetry(text, imageData, targetSessionId, retryCount + 1);
-                return;
-            }
-        }
         addMessage('model', formatErrorMessage(e), 'text', undefined, targetSessionId); 
+    } finally {
+      setIsProcessing(false);
     }
-  };
-
-  const sendTextMessage = async (text: string, imageData?: { data: string, mimeType: string }) => {
-    const apiKey = getActiveKey();
-    if (!apiKey) {
-      alert("API Key is missing. Check settings.");
-      return;
-    }
-
-    if (!text.trim() && !imageData) return;
-    let targetSessionId = activeSessionId;
-    if (!targetSessionId) targetSessionId = createNewChat();
-
-    addMessage('user', text || "Analyzing Image Content", 'text', undefined, targetSessionId);
-    setIsProcessing(true);
-    
-    await sendTextMessageWithRetry(text, imageData, targetSessionId);
-    setIsProcessing(false);
   };
 
   return { 
