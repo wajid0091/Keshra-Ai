@@ -123,7 +123,7 @@ const App: React.FC = () => {
   const showLandingPage = messages.length === 0 && connectionState === ConnectionState.DISCONNECTED;
 
   return (
-    <div className={`flex h-screen ${textColor} font-sans overflow-hidden transition-colors duration-300 ${theme === 'dark' ? 'dark' : ''}`}>
+    <div className={`flex h-full ${textColor} font-sans overflow-hidden transition-colors duration-300 ${theme === 'dark' ? 'dark' : ''}`}>
       
       {/* Sidebar */}
       <aside className={`fixed inset-y-0 left-0 z-50 w-[280px] ${sidebarBg} ${borderCol} border-r shadow-2xl lg:shadow-none transform transition-transform duration-300 ${showSidebar ? 'translate-x-0' : '-translate-x-full'} lg:relative lg:translate-x-0`}>
@@ -176,9 +176,9 @@ const App: React.FC = () => {
       </aside>
 
       {/* Main Content */}
-      <main className={`flex-1 flex flex-col relative min-w-0 ${mainBg}`}>
+      <main className={`flex-1 flex flex-col relative min-w-0 ${mainBg} h-full`}>
         {/* Navbar */}
-        <nav className={`flex items-center justify-between px-6 py-4 border-b ${borderCol} ${theme === 'dark' ? 'bg-black/80' : 'bg-white/80'} backdrop-blur-2xl sticky top-0 z-40`}>
+        <nav className={`flex-none flex items-center justify-between px-6 py-4 border-b ${borderCol} ${theme === 'dark' ? 'bg-black/80' : 'bg-white/80'} backdrop-blur-2xl sticky top-0 z-40`}>
           <div className="flex items-center gap-4">
             <button onClick={() => setShowSidebar(true)} className={`p-2 hover:bg-slate-100 dark:hover:bg-white/10 rounded-xl lg:hidden ${textColor}`}><Menu className="w-6 h-6" /></button>
             <div className="flex items-center gap-2">
@@ -192,7 +192,7 @@ const App: React.FC = () => {
         </nav>
 
         {/* Chat Area */}
-        <div className="flex-1 overflow-y-auto relative custom-scrollbar">
+        <div className="flex-1 overflow-y-auto relative custom-scrollbar pb-0">
           {showLandingPage ? (
             <div className="h-full flex flex-col items-center justify-center p-8 text-center animate-in fade-in zoom-in duration-700">
                <div className="relative mb-12 cursor-pointer scale-110" onClick={() => connectionState === ConnectionState.CONNECTED ? disconnect() : connect()}>
@@ -217,10 +217,10 @@ const App: React.FC = () => {
                </div>
             </div>
           ) : (
-            <div className="max-w-4xl mx-auto w-full px-4 pt-10 pb-40">
+            <div className="max-w-4xl mx-auto w-full px-4 pt-10">
               {/* Show Listening Indicator if Connected but no messages yet */}
               {messages.length === 0 && connectionState === ConnectionState.CONNECTED && (
-                 <div className="flex flex-col items-center justify-center h-full pt-20">
+                 <div className="flex flex-col items-center justify-center pt-20">
                     <ArcReactor isActive={true} isSpeaking={isSpeaking} volume={volumeLevel} />
                     <p className={`mt-8 text-sm font-bold uppercase tracking-widest ${secondaryTextColor} animate-pulse`}>Listening...</p>
                  </div>
@@ -295,8 +295,8 @@ const App: React.FC = () => {
           )}
         </div>
 
-        {/* Input Bar */}
-        <div className={`absolute bottom-0 left-0 w-full p-6 ${theme === 'dark' ? 'bg-gradient-to-t from-black via-black/95' : 'bg-gradient-to-t from-white via-white/95'} to-transparent z-40`}>
+        {/* Input Bar - Using Flex-None to ensure it takes space and isn't cut off */}
+        <div className={`flex-none w-full p-6 ${theme === 'dark' ? 'bg-black border-t border-white/10' : 'bg-white border-t border-slate-100'} z-50`}>
           <div className="max-w-3xl mx-auto">
             {selectedImage && (
               <div className="flex items-center gap-4 p-3 mb-3 bg-cyan-50 dark:bg-white/5 rounded-2xl border border-cyan-500/20 animate-in slide-in-from-bottom-2">

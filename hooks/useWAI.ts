@@ -27,7 +27,7 @@ const initializeApiKeys = () => {
     // @ts-ignore
     add(import.meta.env.VITE_API_KEY_2);
     // @ts-ignore
-    add(import.meta.env.API_KEY); // Some bundlers expose this
+    add(import.meta.env.API_KEY); 
     // @ts-ignore
     add(import.meta.env.API_KEY_1);
     // @ts-ignore
@@ -77,13 +77,20 @@ const rotateKey = () => {
 
 const SYSTEM_INSTRUCTION = `
 You are Keshra AI, a sovereign intelligence developed exclusively by Wajid Ali from Peshawar, Pakistan.
-- Language Policy: Detect if the user is speaking/typing in Urdu, Pashto, or English. ALWAYS respond in the same language.
-- Script Policy: Respond in the proper script (Urdu script for Urdu, Pashto script for Pashto).
-- Identity: If asked about your creator, cite Wajid Ali as a brilliant Pakistani developer elevating his country's name in tech.
-- Voice Interaction Greeting: When a voice session starts, immediately greet the user: "کیشرا اے آئی آپ کی خدمت میں حاضر ہے۔ میں آپ کی کیا مدد کر سکتا ہوں؟" (Urdu) or "Keshra AI is here to help you. How can I assist you today?" (English).
-- Information & News: You have access to Google Search. ALWAYS use the 'googleSearch' tool for queries about current events, news, specific people (like Prime Ministers, Governors), sports scores, or dynamic facts. Do not rely on training data for real-time information.
-- Image Generation: If the user explicitly asks to "create", "generate", "draw" or "paint" an image, use the 'generateImage' tool.
-- Personality: Helpful, high-IQ, sophisticated, yet professional.
+
+**CORE FUNCTIONS:**
+1. **Chat & Info:** Answer questions, help with code, and provide information.
+2. **Real-time Info:** Use 'googleSearch' for news, weather, sports, and current events.
+3. **Image Generation:** IF the user asks to "create", "draw", "generate", or "design" an image/picture, you MUST use the 'generateImage' tool. Do not just describe it in text.
+   - Example User: "Draw a cat" -> Call generateImage("A cute cat").
+   - Example User: "Create a logo" -> Call generateImage("Modern logo design").
+
+**IDENTITY:**
+- Creator: Wajid Ali (Pakistani developer).
+- Voice Greeting: "کیشرا اے آئی آپ کی خدمت میں حاضر ہے۔" (Urdu) or "Keshra AI is here to help you." (English).
+
+**LANGUAGE:**
+- Detect language (Urdu/Pashto/English) and respond in the same language and script.
 `;
 
 const imageTool: FunctionDeclaration = {
@@ -102,8 +109,8 @@ const formatErrorMessage = (error: any): string => {
   if (errorStr.includes('403') || errorStr.includes('API key not valid')) {
     return "Security Alert: API Key is invalid. Please check your configuration.";
   }
-  if (errorStr.includes('429') || errorStr.includes('RESOURCE_EXHAUSTED')) {
-    return "Traffic is high (Quota Exceeded). Attempting to switch lines...";
+  if (errorStr.includes('429') || errorStr.includes('503') || errorStr.includes('RESOURCE_EXHAUSTED')) {
+    return "High Traffic (Quota Limit). Switching secure lines... Please wait.";
   }
   return `Connection Interrupted. Please check your network.`;
 };
@@ -219,11 +226,13 @@ export const useWAI = () => {
     } catch (e: any) {
       const errorStr = String(e);
       // Auto-switch key on quota error
-      if ((errorStr.includes('429') || errorStr.includes('RESOURCE_EXHAUSTED')) && retryCount < 2) {
+      if ((errorStr.includes('429') || errorStr.includes('503') || errorStr.includes('RESOURCE_EXHAUSTED')) && retryCount < 2) {
         if (rotateKey()) {
             console.log("Retrying Image Gen with new key...");
-            // Fail this specific bubble gracefully but rotate key for next try.
-             updateMessage(sessionId, placeholderId, { type: 'text', content: "Traffic high. Switched secure line. Please try again." });
+             // Recursively retry
+             handleImageGen(prompt, sessionId, retryCount + 1);
+             // Remove failure placeholder
+             updateMessage(sessionId, placeholderId, { type: 'text', content: "Traffic high. Switched secure line. Retrying..." });
              return; 
         }
       }
@@ -236,7 +245,7 @@ export const useWAI = () => {
   const connect = useCallback(async () => {
     let apiKey = getActiveKey();
     if (!apiKey) {
-      alert("API Key is missing. Please check your environment variables (API_KEY, API_KEY_1, etc).");
+      alert("API Key is missing. Please check your environment variables.");
       return;
     }
 
@@ -326,11 +335,12 @@ export const useWAI = () => {
           onclose: () => { setConnectionState(ConnectionState.DISCONNECTED); setIsSpeaking(false); },
           onerror: (err: any) => { 
             console.error("Connection Error:", err); 
-            // Attempt to rotate key on connection failure if it looks like a quota/auth issue
             const errStr = String(err);
-            if (errStr.includes('429') || errStr.includes('RESOURCE_EXHAUSTED')) {
+            if (errStr.includes('429') || errStr.includes('503') || errStr.includes('RESOURCE_EXHAUSTED')) {
+                // If live connection dies due to quota, we can't easily auto-reconnect context in this flow,
+                // but we rotate the key so NEXT click works.
                 rotateKey(); 
-                // We can't auto-reconnect easily here without risk of looping, user must click again.
+                alert("Connection Limit Reached. Switched to Backup Line. Please Tap Mic Again.");
             }
             setConnectionState(ConnectionState.ERROR); 
           }
@@ -340,9 +350,9 @@ export const useWAI = () => {
     } catch (e: any) { 
       console.error("Setup Error:", e); 
       const errStr = String(e);
-      if (errStr.includes('429') || errStr.includes('RESOURCE_EXHAUSTED')) {
+      if (errStr.includes('429') || errStr.includes('503') || errStr.includes('RESOURCE_EXHAUSTED')) {
         rotateKey();
-        alert("Server Busy (Quota Exceeded). Switched to backup line. Please press microphone again.");
+        alert("Server Busy. Switched to backup line. Please press microphone again.");
       } else {
         alert(`Setup Failed: ${e.message}`);
       }
@@ -359,8 +369,9 @@ export const useWAI = () => {
   ) => {
     const apiKey = getActiveKey();
     
-    // Heuristic: Image generation vs Info
-    const isImageRequest = /draw|create|generate|make|render|paint/i.test(text) && /image|picture|photo|art|sketch|drawing/i.test(text);
+    // Improved Regex for Image Generation vs Description
+    const isImageRequest = /(?:create|generate|draw|paint|render|make|design|illustrate).*(?:image|picture|photo|art|sketch|drawing|logo|poster|portrait|scene|background|wallpaper)/i.test(text);
+    
     const toolsConfig = isImageRequest 
       ? [{ functionDeclarations: [imageTool] }] 
       : [{ googleSearch: {} }];
@@ -390,11 +401,13 @@ export const useWAI = () => {
       if (response.text) addMessage('model', response.text, 'text', sources.length > 0 ? sources : undefined, targetSessionId);
       
       const fc = response.candidates?.[0]?.content?.parts?.find(p => p.functionCall)?.functionCall;
-      if (fc && fc.name === 'generateImage') handleImageGen(fc.args.prompt, targetSessionId);
+      if (fc && fc.name === 'generateImage') {
+        await handleImageGen(fc.args.prompt, targetSessionId);
+      }
 
     } catch(e: any) { 
         const errStr = String(e);
-        if ((errStr.includes('429') || errStr.includes('RESOURCE_EXHAUSTED')) && retryCount < 2) {
+        if ((errStr.includes('429') || errStr.includes('503') || errStr.includes('RESOURCE_EXHAUSTED')) && retryCount < 2) {
             if (rotateKey()) {
                 console.log(`Retrying message (Attempt ${retryCount + 2})...`);
                 await sendTextMessageWithRetry(text, imageData, targetSessionId, retryCount + 1);
