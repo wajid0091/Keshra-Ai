@@ -5,28 +5,31 @@ import { createAudioBlob, decode, decodeAudioData } from '../utils/audioUtils';
 
 // Robust Global API Key Hook
 const getApiKey = () => {
-  // 1. Check for standard process.env.API_KEY (replaced by bundler)
-  // This is the primary method for Netlify and standard builds.
-  if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
-    const key = process.env.API_KEY;
-    if (key && key.trim().length > 0 && !key.includes("placeholder")) {
-      return key;
-    }
+  let key = "";
+
+  // 1. Check Vite Environment (Most common for this setup)
+  // @ts-ignore
+  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_KEY) {
+    // @ts-ignore
+    key = import.meta.env.VITE_API_KEY;
   }
 
-  // 2. Fallback check for window global if injected via script
-  if ((window as any).__KESHRA_API_KEY__) {
-    return (window as any).__KESHRA_API_KEY__;
-  }
-  
-  // 3. Fallback: Check for other common prefixes if the bundler didn't map API_KEY
-  if (typeof process !== 'undefined' && process.env) {
-      if (process.env.REACT_APP_API_KEY) return process.env.REACT_APP_API_KEY;
-      if (process.env.VITE_API_KEY) return process.env.VITE_API_KEY;
+  // 2. Check Create React App / Webpack Environment
+  if (!key && typeof process !== 'undefined' && process.env) {
+    if (process.env.REACT_APP_API_KEY) key = process.env.REACT_APP_API_KEY;
+    else if (process.env.API_KEY) key = process.env.API_KEY;
   }
 
-  console.warn("Keshra AI: API Key not found in environment.");
-  return "";
+  // 3. Check Window Injection (Fallback)
+  if (!key && (window as any).__KESHRA_API_KEY__) {
+    key = (window as any).__KESHRA_API_KEY__;
+  }
+
+  if (!key || key.includes("placeholder")) {
+    console.warn("Keshra AI: API Key is missing.");
+    return "";
+  }
+  return key;
 };
 
 const SYSTEM_INSTRUCTION = `
@@ -54,7 +57,7 @@ const formatErrorMessage = (error: any): string => {
   const errorStr = typeof error === 'string' ? error : JSON.stringify(error);
   console.error("Keshra AI Error:", errorStr);
   if (errorStr.includes('403') || errorStr.includes('API key not valid')) {
-    return "Security Alert: API Key is invalid or missing. Please check configuration.";
+    return "Security Alert: API Key is invalid. Please check VITE_API_KEY in Netlify settings.";
   }
   if (errorStr.includes('429') || errorStr.includes('RESOURCE_EXHAUSTED')) {
     return "Traffic is high. My neural capacity is momentarily full. Please try again in 30 seconds.";
@@ -180,7 +183,7 @@ export const useWAI = () => {
   const connect = useCallback(async () => {
     const apiKey = getApiKey();
     if (!apiKey) {
-      alert("API Key is missing. Please configure it in Netlify environment variables as API_KEY.");
+      alert("API Key is missing. Please add VITE_API_KEY in Netlify Environment Variables.");
       return;
     }
 
@@ -190,17 +193,27 @@ export const useWAI = () => {
 
     try {
       const ai = new GoogleGenAI({ apiKey });
-      const inputCtx = new AudioContext({ sampleRate: 16000 });
-      const outputCtx = new AudioContext({ sampleRate: 24000 });
       
-      // Critical for mobile/tablet: Resume context after user interaction
-      await inputCtx.resume();
-      await outputCtx.resume();
+      // Initialize Audio Contexts
+      const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
+      const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
+      
+      // CRITICAL FIX FOR TABLETS/MOBILE: Resume contexts immediately
+      // Mobile browsers suspend audio context until explicit user action (click/touch).
+      // Since 'connect' is called via button click, we must resume here.
+      if (inputCtx.state === 'suspended') await inputCtx.resume();
+      if (outputCtx.state === 'suspended') await outputCtx.resume();
 
       inputContextRef.current = inputCtx;
       outputContextRef.current = outputCtx;
       
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      const stream = await navigator.mediaDevices.getUserMedia({ 
+        audio: {
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        } 
+      });
 
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
@@ -215,12 +228,17 @@ export const useWAI = () => {
             setConnectionState(ConnectionState.CONNECTED);
             const source = inputCtx.createMediaStreamSource(stream);
             const processor = inputCtx.createScriptProcessor(4096, 1, 1);
+            
             processor.onaudioprocess = (e) => {
               if (isSpeakingRef.current) return;
               const inputData = e.inputBuffer.getChannelData(0);
+              
+              // Calculate volume for UI
               let sum = 0;
               for(let i=0; i<inputData.length; i++) sum += inputData[i] * inputData[i];
-              setVolumeLevel(Math.sqrt(sum / inputData.length) * 5);
+              const rms = Math.sqrt(sum / inputData.length);
+              setVolumeLevel(Math.min(rms * 10, 1)); 
+
               sessionPromise.then(s => {
                 try {
                   s.sendRealtimeInput({ media: createAudioBlob(inputData) });
@@ -270,13 +288,17 @@ export const useWAI = () => {
         }
       });
       sessionPromiseRef.current = sessionPromise;
-    } catch (e: any) { console.error("Setup Error:", e); setConnectionState(ConnectionState.ERROR); }
+    } catch (e: any) { 
+      console.error("Setup Error:", e); 
+      alert(`Setup Failed: ${e.message}`);
+      setConnectionState(ConnectionState.ERROR); 
+    }
   }, [addMessage, activeSessionId, createNewChat, updateMessage]);
 
   const sendTextMessage = async (text: string, imageData?: { data: string, mimeType: string }) => {
     const apiKey = getApiKey();
     if (!apiKey) {
-      alert("API Key is missing. Check environment configuration.");
+      alert("API Key is missing. Please add VITE_API_KEY in Netlify.");
       return;
     }
 
@@ -287,11 +309,8 @@ export const useWAI = () => {
     addMessage('user', text || "Analyzing Image Content", 'text', undefined, targetSessionId);
     setIsProcessing(true);
     
-    // Heuristic to detect if user wants an image or general info
-    // Google Search cannot be mixed with other tools in standard config easily, so we switch.
+    // Heuristic: Image generation vs Info
     const isImageRequest = /draw|create|generate|make|render|paint/i.test(text) && /image|picture|photo|art|sketch|drawing/i.test(text);
-    
-    // Config: If image request, use Function Declarations. Else, use Google Search.
     const toolsConfig = isImageRequest 
       ? [{ functionDeclarations: [imageTool] }] 
       : [{ googleSearch: {} }];
