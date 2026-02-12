@@ -5,28 +5,28 @@ import { createAudioBlob, decode, decodeAudioData } from '../utils/audioUtils';
 
 // --- Robust API Key Retrieval ---
 const getApiKey = (): string => {
-  // 1. Vite / Netlify (Most reliable for this setup)
+  // 1. Vite / Netlify Standard (Highest Priority)
   // @ts-ignore
   if (import.meta && import.meta.env && import.meta.env.VITE_API_KEY) {
     // @ts-ignore
     return import.meta.env.VITE_API_KEY;
   }
 
-  // 2. Fallback for other environments
+  // 2. Alternative Configuration
   // @ts-ignore
   if (import.meta && import.meta.env && import.meta.env.API_KEY) {
     // @ts-ignore
     return import.meta.env.API_KEY;
   }
 
-  // 3. Process Env (Node/Webpack shims)
+  // 3. Process Env Fallback (Node/Webpack shims)
   if (typeof process !== 'undefined' && process.env) {
     if (process.env.VITE_API_KEY) return process.env.VITE_API_KEY;
     if (process.env.API_KEY) return process.env.API_KEY;
     if (process.env.REACT_APP_API_KEY) return process.env.REACT_APP_API_KEY;
   }
 
-  // 4. Manual Window Injection
+  // 4. Window Injection (Last Resort)
   if ((window as any).__KESHRA_API_KEY__) {
     return (window as any).__KESHRA_API_KEY__;
   }
@@ -66,19 +66,16 @@ const formatErrorMessage = (error: any): string => {
   const errorStr = typeof error === 'string' ? error : JSON.stringify(error, Object.getOwnPropertyNames(error));
   console.error("Keshra AI Logic Error:", errorStr);
 
-  // Specific handling for API Key issues
   if (errorStr.includes('API key') || errorStr.includes('403') || errorStr.includes('PERMISSION_DENIED')) {
     return "Authentication Failed: API Key is invalid or missing. Please check Netlify Environment Variables (VITE_API_KEY).";
   }
   
-  // Specific handling for Quota/Rate Limits
   if (errorStr.includes('429') || errorStr.includes('RESOURCE_EXHAUSTED')) {
-    return "High Traffic Warning: The AI model is currently at maximum capacity (429). Please wait a moment and try again.";
+    return "High Traffic Warning: The AI model is currently at maximum capacity. Please wait a moment.";
   }
 
-  // Server Overload
   if (errorStr.includes('503') || errorStr.includes('Overloaded')) {
-    return "Server Busy: Google's AI services are experiencing high load. Retrying usually works.";
+    return "Server Busy: Google's AI services are experiencing high load.";
   }
 
   return "Connection could not be established. Please check your internet or try again.";
@@ -292,7 +289,6 @@ export const useWAI = () => {
           onclose: () => { setConnectionState(ConnectionState.DISCONNECTED); setIsSpeaking(false); },
           onerror: (err: any) => { 
             console.error("Live Connection Error:", err); 
-            // Don't alert here to avoid spamming, just log
             setConnectionState(ConnectionState.ERROR); 
           }
         }
@@ -321,6 +317,7 @@ export const useWAI = () => {
     
     const isImageRequest = /(?:create|generate|draw|paint|render|make|design|illustrate).*(?:image|picture|photo|art|sketch|drawing|logo|poster|portrait|scene|background|wallpaper)/i.test(text);
     
+    // Config: Image Gen ALWAYS uses tools. Normal chat uses Search, but we'll have a fallback.
     const toolsConfig = isImageRequest 
       ? [{ functionDeclarations: [imageTool] }] 
       : [{ googleSearch: {} }];
@@ -330,6 +327,7 @@ export const useWAI = () => {
       const contents: any[] = [{ role: 'user', parts: [{ text: text || "Provide detailed analysis of this image." }] }];
       if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
       
+      // Attempt 1: Full Capability (With Tools)
       const response = await ai.models.generateContent({
         model: 'gemini-3-flash-preview', 
         contents,
@@ -355,7 +353,32 @@ export const useWAI = () => {
       }
 
     } catch(e: any) { 
-        addMessage('model', formatErrorMessage(e), 'text', undefined, targetSessionId); 
+        // --- SMART RETRY LOGIC ---
+        // If we hit a Quota/Capacity error AND we were using Google Search tools (not image gen),
+        // try again WITHOUT tools to ensure the user gets a text response.
+        const errorStr = JSON.stringify(e);
+        const isQuota = errorStr.includes('429') || errorStr.includes('RESOURCE_EXHAUSTED') || errorStr.includes('503') || errorStr.includes('Overloaded');
+        
+        if (isQuota && !isImageRequest && !imageData) {
+           console.warn("Quota hit with tools. Retrying without tools...");
+           try {
+              const aiRetry = new GoogleGenAI({ apiKey });
+              const retryResponse = await aiRetry.models.generateContent({
+                model: 'gemini-3-flash-preview',
+                contents: [{ role: 'user', parts: [{ text }] }],
+                config: { systemInstruction: SYSTEM_INSTRUCTION } // No tools
+              });
+              if (retryResponse.text) {
+                addMessage('model', retryResponse.text, 'text', undefined, targetSessionId);
+                return; // Success on retry
+              }
+           } catch (retryError) {
+              // If retry also fails, show original error
+              addMessage('model', formatErrorMessage(e), 'text', undefined, targetSessionId);
+           }
+        } else {
+           addMessage('model', formatErrorMessage(e), 'text', undefined, targetSessionId); 
+        }
     } finally {
       setIsProcessing(false);
     }
