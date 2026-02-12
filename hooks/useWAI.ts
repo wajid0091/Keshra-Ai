@@ -3,33 +3,76 @@ import { GoogleGenAI, Modality, LiveServerMessage, Type, FunctionDeclaration } f
 import { ConnectionState, Message, GroundingSource, ChatSession } from '../types';
 import { createAudioBlob, decode, decodeAudioData } from '../utils/audioUtils';
 
-// Robust Global API Key Hook
-const getApiKey = () => {
-  let key = "";
+// --- API Key Management System ---
+let apiKeys: string[] = [];
+let currentKeyIdx = 0;
 
-  // 1. Check Vite Environment (Most common for this setup)
+const initializeApiKeys = () => {
+  if (apiKeys.length > 0) return;
+
+  const candidates: string[] = [];
+  const add = (k: any) => {
+    if (k && typeof k === 'string' && k.trim().length > 10 && !k.includes('placeholder')) {
+      candidates.push(k.trim());
+    }
+  };
+
+  // 1. Check Vite 'import.meta.env' (Primary for Vite apps)
   // @ts-ignore
-  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_KEY) {
+  if (typeof import.meta !== 'undefined' && import.meta.env) {
     // @ts-ignore
-    key = import.meta.env.VITE_API_KEY;
+    add(import.meta.env.VITE_API_KEY);
+    // @ts-ignore
+    add(import.meta.env.VITE_API_KEY_1);
+    // @ts-ignore
+    add(import.meta.env.VITE_API_KEY_2);
+    // @ts-ignore
+    add(import.meta.env.API_KEY); // Some bundlers expose this
+    // @ts-ignore
+    add(import.meta.env.API_KEY_1);
+    // @ts-ignore
+    add(import.meta.env.API_KEY_2);
   }
 
-  // 2. Check Create React App / Webpack Environment
-  if (!key && typeof process !== 'undefined' && process.env) {
-    if (process.env.REACT_APP_API_KEY) key = process.env.REACT_APP_API_KEY;
-    else if (process.env.API_KEY) key = process.env.API_KEY;
+  // 2. Check 'process.env' (Netlify/Webpack/Standard)
+  if (typeof process !== 'undefined' && process.env) {
+    add(process.env.API_KEY);
+    add(process.env.API_KEY_1);
+    add(process.env.API_KEY_2);
+    add(process.env.VITE_API_KEY);
+    add(process.env.VITE_API_KEY_1);
+    add(process.env.VITE_API_KEY_2);
+    add(process.env.REACT_APP_API_KEY);
+    add(process.env.REACT_APP_API_KEY_1);
   }
 
-  // 3. Check Window Injection (Fallback)
-  if (!key && (window as any).__KESHRA_API_KEY__) {
-    key = (window as any).__KESHRA_API_KEY__;
-  }
+  // 3. Fallback: Window Injection
+  add((window as any).__KESHRA_API_KEY__);
 
-  if (!key || key.includes("placeholder")) {
-    console.warn("Keshra AI: API Key is missing.");
-    return "";
+  // Remove duplicates
+  apiKeys = [...new Set(candidates)];
+  
+  if (apiKeys.length === 0) {
+    console.warn("Keshra AI Warning: No valid API Keys found.");
+  } else {
+    console.log(`Keshra AI: Loaded ${apiKeys.length} API Keys.`);
   }
-  return key;
+};
+
+const getActiveKey = () => {
+  initializeApiKeys();
+  if (apiKeys.length === 0) return "";
+  return apiKeys[currentKeyIdx % apiKeys.length];
+};
+
+const rotateKey = () => {
+  initializeApiKeys();
+  if (apiKeys.length > 1) {
+    currentKeyIdx = (currentKeyIdx + 1) % apiKeys.length;
+    console.warn(`Quota Limit Detected. Switching to API Key Index: ${currentKeyIdx}`);
+    return true;
+  }
+  return false;
 };
 
 const SYSTEM_INSTRUCTION = `
@@ -57,10 +100,10 @@ const formatErrorMessage = (error: any): string => {
   const errorStr = typeof error === 'string' ? error : JSON.stringify(error);
   console.error("Keshra AI Error:", errorStr);
   if (errorStr.includes('403') || errorStr.includes('API key not valid')) {
-    return "Security Alert: API Key is invalid. Please check VITE_API_KEY in Netlify settings.";
+    return "Security Alert: API Key is invalid. Please check your configuration.";
   }
   if (errorStr.includes('429') || errorStr.includes('RESOURCE_EXHAUSTED')) {
-    return "Traffic is high. My neural capacity is momentarily full. Please try again in 30 seconds.";
+    return "Traffic is high (Quota Exceeded). Attempting to switch lines...";
   }
   return `Connection Interrupted. Please check your network.`;
 };
@@ -146,13 +189,13 @@ export const useWAI = () => {
     });
   }, [activeSessionId]);
 
-  const handleImageGen = async (prompt: string, sessionId: string) => {
+  const handleImageGen = async (prompt: string, sessionId: string, retryCount = 0) => {
     const placeholderId = Math.random().toString(36).substr(2, 9);
     addMessage('model', 'Creating your masterpiece...', 'loading-image', undefined, sessionId, placeholderId);
     
     setIsProcessing(true);
     try {
-      const apiKey = getApiKey();
+      const apiKey = getActiveKey();
       if (!apiKey) throw new Error("API Key missing");
       
       const ai = new GoogleGenAI({ apiKey });
@@ -174,6 +217,16 @@ export const useWAI = () => {
       }
       updateMessage(sessionId, placeholderId, { type: 'text', content: "I couldn't generate an image at this moment." });
     } catch (e: any) {
+      const errorStr = String(e);
+      // Auto-switch key on quota error
+      if ((errorStr.includes('429') || errorStr.includes('RESOURCE_EXHAUSTED')) && retryCount < 2) {
+        if (rotateKey()) {
+            console.log("Retrying Image Gen with new key...");
+            // Fail this specific bubble gracefully but rotate key for next try.
+             updateMessage(sessionId, placeholderId, { type: 'text', content: "Traffic high. Switched secure line. Please try again." });
+             return; 
+        }
+      }
       updateMessage(sessionId, placeholderId, { type: 'text', content: formatErrorMessage(e) });
     } finally {
       setIsProcessing(false);
@@ -181,9 +234,9 @@ export const useWAI = () => {
   };
 
   const connect = useCallback(async () => {
-    const apiKey = getApiKey();
+    let apiKey = getActiveKey();
     if (!apiKey) {
-      alert("API Key is missing. Please add VITE_API_KEY in Netlify Environment Variables.");
+      alert("API Key is missing. Please check your environment variables (API_KEY, API_KEY_1, etc).");
       return;
     }
 
@@ -194,13 +247,9 @@ export const useWAI = () => {
     try {
       const ai = new GoogleGenAI({ apiKey });
       
-      // Initialize Audio Contexts
       const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
       const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
       
-      // CRITICAL FIX FOR TABLETS/MOBILE: Resume contexts immediately
-      // Mobile browsers suspend audio context until explicit user action (click/touch).
-      // Since 'connect' is called via button click, we must resume here.
       if (inputCtx.state === 'suspended') await inputCtx.resume();
       if (outputCtx.state === 'suspended') await outputCtx.resume();
 
@@ -208,11 +257,7 @@ export const useWAI = () => {
       outputContextRef.current = outputCtx;
       
       const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: {
-          echoCancellation: true,
-          noiseSuppression: true,
-          autoGainControl: true
-        } 
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } 
       });
 
       const sessionPromise = ai.live.connect({
@@ -232,17 +277,12 @@ export const useWAI = () => {
             processor.onaudioprocess = (e) => {
               if (isSpeakingRef.current) return;
               const inputData = e.inputBuffer.getChannelData(0);
-              
-              // Calculate volume for UI
               let sum = 0;
               for(let i=0; i<inputData.length; i++) sum += inputData[i] * inputData[i];
-              const rms = Math.sqrt(sum / inputData.length);
-              setVolumeLevel(Math.min(rms * 10, 1)); 
+              setVolumeLevel(Math.min(Math.sqrt(sum / inputData.length) * 10, 1)); 
 
               sessionPromise.then(s => {
-                try {
-                  s.sendRealtimeInput({ media: createAudioBlob(inputData) });
-                } catch (err) { }
+                try { s.sendRealtimeInput({ media: createAudioBlob(inputData) }); } catch (err) { }
               }).catch(() => {});
             };
             source.connect(processor);
@@ -284,30 +324,40 @@ export const useWAI = () => {
             }
           },
           onclose: () => { setConnectionState(ConnectionState.DISCONNECTED); setIsSpeaking(false); },
-          onerror: (err: any) => { console.error("Connection Error:", err); setConnectionState(ConnectionState.ERROR); }
+          onerror: (err: any) => { 
+            console.error("Connection Error:", err); 
+            // Attempt to rotate key on connection failure if it looks like a quota/auth issue
+            const errStr = String(err);
+            if (errStr.includes('429') || errStr.includes('RESOURCE_EXHAUSTED')) {
+                rotateKey(); 
+                // We can't auto-reconnect easily here without risk of looping, user must click again.
+            }
+            setConnectionState(ConnectionState.ERROR); 
+          }
         }
       });
       sessionPromiseRef.current = sessionPromise;
     } catch (e: any) { 
       console.error("Setup Error:", e); 
-      alert(`Setup Failed: ${e.message}`);
+      const errStr = String(e);
+      if (errStr.includes('429') || errStr.includes('RESOURCE_EXHAUSTED')) {
+        rotateKey();
+        alert("Server Busy (Quota Exceeded). Switched to backup line. Please press microphone again.");
+      } else {
+        alert(`Setup Failed: ${e.message}`);
+      }
       setConnectionState(ConnectionState.ERROR); 
     }
   }, [addMessage, activeSessionId, createNewChat, updateMessage]);
 
-  const sendTextMessage = async (text: string, imageData?: { data: string, mimeType: string }) => {
-    const apiKey = getApiKey();
-    if (!apiKey) {
-      alert("API Key is missing. Please add VITE_API_KEY in Netlify.");
-      return;
-    }
-
-    if (!text.trim() && !imageData) return;
-    let targetSessionId = activeSessionId;
-    if (!targetSessionId) targetSessionId = createNewChat();
-
-    addMessage('user', text || "Analyzing Image Content", 'text', undefined, targetSessionId);
-    setIsProcessing(true);
+  // Recursive function to handle retries for text messages
+  const sendTextMessageWithRetry = async (
+    text: string, 
+    imageData: { data: string, mimeType: string } | undefined,
+    targetSessionId: string,
+    retryCount = 0
+  ) => {
+    const apiKey = getActiveKey();
     
     // Heuristic: Image generation vs Info
     const isImageRequest = /draw|create|generate|make|render|paint/i.test(text) && /image|picture|photo|art|sketch|drawing/i.test(text);
@@ -342,8 +392,35 @@ export const useWAI = () => {
       const fc = response.candidates?.[0]?.content?.parts?.find(p => p.functionCall)?.functionCall;
       if (fc && fc.name === 'generateImage') handleImageGen(fc.args.prompt, targetSessionId);
 
-    } catch(e: any) { addMessage('model', formatErrorMessage(e), 'text', undefined, targetSessionId); }
-    finally { setIsProcessing(false); }
+    } catch(e: any) { 
+        const errStr = String(e);
+        if ((errStr.includes('429') || errStr.includes('RESOURCE_EXHAUSTED')) && retryCount < 2) {
+            if (rotateKey()) {
+                console.log(`Retrying message (Attempt ${retryCount + 2})...`);
+                await sendTextMessageWithRetry(text, imageData, targetSessionId, retryCount + 1);
+                return;
+            }
+        }
+        addMessage('model', formatErrorMessage(e), 'text', undefined, targetSessionId); 
+    }
+  };
+
+  const sendTextMessage = async (text: string, imageData?: { data: string, mimeType: string }) => {
+    const apiKey = getActiveKey();
+    if (!apiKey) {
+      alert("API Key is missing. Check settings.");
+      return;
+    }
+
+    if (!text.trim() && !imageData) return;
+    let targetSessionId = activeSessionId;
+    if (!targetSessionId) targetSessionId = createNewChat();
+
+    addMessage('user', text || "Analyzing Image Content", 'text', undefined, targetSessionId);
+    setIsProcessing(true);
+    
+    await sendTextMessageWithRetry(text, imageData, targetSessionId);
+    setIsProcessing(false);
   };
 
   return { 
