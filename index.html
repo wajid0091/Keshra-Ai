@@ -6,6 +6,14 @@
     <title>Keshra AI | Pakistan's Sovereign Intelligence</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=Noto+Sans+Arabic:wght@400;700&display=swap" rel="stylesheet">
+    
+    <!-- Syntax Highlighting (Dracula Theme for Dark Mode support) -->
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/styles/atom-one-dark.min.css">
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/highlight.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/python.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/javascript.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/highlight.js/11.9.0/languages/bash.min.js"></script>
+
     <style>
       body {
         font-family: 'Plus Jakarta Sans', sans-serif;
@@ -24,15 +32,20 @@
         background: #0891b2;
         color: white;
       }
-      .custom-scrollbar::-webkit-scrollbar { width: 2px; }
+      .custom-scrollbar::-webkit-scrollbar { width: 4px; }
       .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
-      .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.05); border-radius: 10px; }
+      .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.1); border-radius: 10px; }
       .rtl { direction: rtl; }
       .font-urdu { font-family: 'Noto Sans Arabic', sans-serif; font-weight: 700; }
       .scrollbar-hide::-webkit-scrollbar { display: none; }
+      
+      /* Code Block Styling */
+      pre { margin: 0; border-radius: 0.5rem; }
+      code { font-family: 'Fira Code', 'Consolas', monospace; font-size: 0.85rem; }
+      .hljs { background: transparent; padding: 0; }
     </style>
     <script>
-      // Essential shim for process.env to prevent runtime errors if bundler doesn't inject it globally
+      // Essential shim for process.env to prevent runtime errors
       window.process = window.process || {};
       window.process.env = window.process.env || {};
     </script>

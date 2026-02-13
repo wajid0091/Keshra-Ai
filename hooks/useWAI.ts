@@ -1,36 +1,19 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, Modality, LiveServerMessage, Type, FunctionDeclaration } from '@google/genai';
-import { ConnectionState, Message, GroundingSource, ChatSession } from '../types';
+import { ConnectionState, Message, GroundingSource, ChatSession, ChatMode } from '../types';
 import { createAudioBlob, decode, decodeAudioData } from '../utils/audioUtils';
 
 // --- Robust API Key Retrieval ---
 const getApiKey = (): string => {
-  // 1. Vite / Netlify Standard (Highest Priority)
   // @ts-ignore
-  if (import.meta && import.meta.env && import.meta.env.VITE_API_KEY) {
-    // @ts-ignore
-    return import.meta.env.VITE_API_KEY;
-  }
-
-  // 2. Alternative Configuration
+  if (import.meta && import.meta.env && import.meta.env.VITE_API_KEY) return import.meta.env.VITE_API_KEY;
   // @ts-ignore
-  if (import.meta && import.meta.env && import.meta.env.API_KEY) {
-    // @ts-ignore
-    return import.meta.env.API_KEY;
-  }
-
-  // 3. Process Env Fallback (Node/Webpack shims)
+  if (import.meta && import.meta.env && import.meta.env.API_KEY) return import.meta.env.API_KEY;
   if (typeof process !== 'undefined' && process.env) {
     if (process.env.VITE_API_KEY) return process.env.VITE_API_KEY;
     if (process.env.API_KEY) return process.env.API_KEY;
-    if (process.env.REACT_APP_API_KEY) return process.env.REACT_APP_API_KEY;
   }
-
-  // 4. Window Injection (Last Resort)
-  if ((window as any).__KESHRA_API_KEY__) {
-    return (window as any).__KESHRA_API_KEY__;
-  }
-
+  if ((window as any).__KESHRA_API_KEY__) return (window as any).__KESHRA_API_KEY__;
   return "";
 };
 
@@ -38,18 +21,18 @@ const SYSTEM_INSTRUCTION = `
 You are Keshra AI, a sovereign intelligence developed exclusively by Wajid Ali from Peshawar, Pakistan.
 
 **CORE FUNCTIONS:**
-1. **Chat & Info:** Answer questions, help with code, and provide information.
-2. **Real-time Info:** Use 'googleSearch' for news, weather, sports, and current events.
-3. **Image Generation:** IF the user asks to "create", "draw", "generate", or "design" an image/picture, you MUST use the 'generateImage' tool. Do not just describe it in text.
-   - Example User: "Draw a cat" -> Call generateImage("A cute cat").
-   - Example User: "Create a logo" -> Call generateImage("Modern logo design").
+1. **Chat & Coding:** Provide clear, concise answers. When writing code, use proper markdown code blocks (e.g., \`\`\`python).
+2. **Real-time Info:** Use 'googleSearch' for news, weather, sports.
+3. **Image Generation:** IF the user asks to "create", "draw", "generate", "design", or "make" an image or animation, you MUST call the 'generateImage' tool.
+
+**IMPORTANT BEHAVIORAL RULE:**
+- Do **NOT** start every response with "Keshra AI is here to help" or "I am ready to assist".
+- Only introduce yourself if explicitly asked "Who are you?" or "Who made you?".
+- Otherwise, answer the user's question directly and professionally.
 
 **IDENTITY:**
 - Creator: Wajid Ali (Pakistani developer).
-- Voice Greeting: "کیشرا اے آئی آپ کی خدمت میں حاضر ہے۔" (Urdu) or "Keshra AI is here to help you." (English).
-
-**LANGUAGE:**
-- Detect language (Urdu/Pashto/English) and respond in the same language and script.
+- Voice Greeting (Only if asked): "کیشرا اے آئی آپ کی خدمت میں حاضر ہے۔" (Urdu) or "Keshra AI is here to help you." (English).
 `;
 
 const imageTool: FunctionDeclaration = {
@@ -63,27 +46,21 @@ const imageTool: FunctionDeclaration = {
 };
 
 const formatErrorMessage = (error: any): string => {
-  const errorStr = typeof error === 'string' ? error : JSON.stringify(error, Object.getOwnPropertyNames(error));
-  console.error("Keshra AI Logic Error:", errorStr);
-
-  if (errorStr.includes('API key') || errorStr.includes('403') || errorStr.includes('PERMISSION_DENIED')) {
-    return "Authentication Failed: API Key is invalid or missing. Please check Netlify Environment Variables (VITE_API_KEY).";
-  }
+  console.error("Raw AI Error:", error);
+  if (!error) return "Unknown error";
+  if (error instanceof Error) return error.message;
+  if (typeof error === 'string') return error;
   
-  if (errorStr.includes('429') || errorStr.includes('RESOURCE_EXHAUSTED')) {
-    return "High Traffic Warning: The AI model is currently at maximum capacity. Please wait a moment.";
+  try {
+    return JSON.stringify(error);
+  } catch (e) {
+    return String(error);
   }
-
-  if (errorStr.includes('503') || errorStr.includes('Overloaded')) {
-    return "Server Busy: Google's AI services are experiencing high load.";
-  }
-
-  return "Connection could not be established. Please check your internet or try again.";
 };
 
 export const useWAI = () => {
   const [sessions, setSessions] = useState<ChatSession[]>(() => {
-    const saved = localStorage.getItem('keshra_chats_v22_search');
+    const saved = localStorage.getItem('keshra_chats_v26_stable');
     if (!saved) return [];
     try {
       return JSON.parse(saved).map((s: any) => ({
@@ -95,13 +72,14 @@ export const useWAI = () => {
   });
 
   const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
-    return localStorage.getItem('keshra_active_id_v22_search') || null;
+    return localStorage.getItem('keshra_active_id_v26_stable') || null;
   });
 
   const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.DISCONNECTED);
   const [isSpeaking, setIsSpeaking] = useState(false);
   const [isProcessing, setIsProcessing] = useState(false);
   const [volumeLevel, setVolumeLevel] = useState(0);
+  const [chatMode, setChatMode] = useState<ChatMode>('normal');
 
   const isSpeakingRef = useRef(false);
   const sessionPromiseRef = useRef<Promise<any> | null>(null);
@@ -109,11 +87,33 @@ export const useWAI = () => {
   const audioSources = useRef<Set<AudioBufferSourceNode>>(new Set());
   const inputContextRef = useRef<AudioContext | null>(null);
   const outputContextRef = useRef<AudioContext | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
   const transcriptionRef = useRef<{ user: string; model: string }>({ user: '', model: '' });
 
   useEffect(() => { isSpeakingRef.current = isSpeaking; }, [isSpeaking]);
-  useEffect(() => { localStorage.setItem('keshra_chats_v22_search', JSON.stringify(sessions)); }, [sessions]);
-  useEffect(() => { if (activeSessionId) localStorage.setItem('keshra_active_id_v22_search', activeSessionId); }, [activeSessionId]);
+  
+  // CRITICAL FIX: Robust localStorage saving using WeakSet to handle any circular references
+  useEffect(() => { 
+    try {
+      const seen = new WeakSet();
+      const serialized = JSON.stringify(sessions, (key, value) => {
+        if (typeof value === "object" && value !== null) {
+            // Check for circular reference
+            if (seen.has(value)) return;
+            seen.add(value);
+            
+            // Check for DOM nodes or React Internals
+            if (key.startsWith('_') || value instanceof HTMLElement || (value && value.nativeEvent)) return undefined;
+        }
+        return value;
+      });
+      localStorage.setItem('keshra_chats_v26_stable', serialized); 
+    } catch (e) {
+      console.error("Failed to save chat history (Circular Reference Detected):", e);
+    }
+  }, [sessions]);
+  
+  useEffect(() => { if (activeSessionId) localStorage.setItem('keshra_active_id_v26_stable', activeSessionId); }, [activeSessionId]);
 
   const createNewChat = useCallback(() => {
     const newId = Math.random().toString(36).substring(2, 9);
@@ -124,13 +124,19 @@ export const useWAI = () => {
   }, []);
 
   const addMessage = useCallback((role: 'user' | 'model', content: string, type: 'text' | 'image' | 'loading-image' = 'text', sources?: GroundingSource[], targetSessionId?: string, customId?: string) => {
+    // CRITICAL FIX: Ensure content is a primitive string
+    const safeContent = (typeof content === 'string' || typeof content === 'number') ? String(content) : "Content Error";
+    
+    // CRITICAL FIX: Manually map sources to primitive objects to avoid circular references from API responses
+    const safeSources = sources ? sources.map(s => ({ title: String(s.title || ''), uri: String(s.uri || '') })) : undefined;
+
     const newMessage: Message = { 
       id: customId || Math.random().toString(36).substr(2, 9), 
       role, 
-      content, 
+      content: safeContent, 
       type, 
       timestamp: new Date(), 
-      sources 
+      sources: safeSources
     };
     
     setSessions(prev => {
@@ -141,15 +147,26 @@ export const useWAI = () => {
         ...s,
         messages: [...s.messages, newMessage],
         updatedAt: new Date(),
-        title: s.messages.length === 0 && role === 'user' ? content.slice(0, 30) : s.title
+        title: s.messages.length === 0 && role === 'user' ? safeContent.slice(0, 30) : s.title
       } : s);
     });
   }, [activeSessionId]);
 
   const updateMessage = useCallback((sessionId: string, messageId: string, updates: Partial<Message>) => {
+    // CRITICAL FIX: Whitelist update properties
+    const cleanUpdates: Partial<Message> = {};
+    if (updates.content !== undefined) cleanUpdates.content = String(updates.content);
+    if (updates.type !== undefined) cleanUpdates.type = updates.type;
+    if (updates.feedback !== undefined) cleanUpdates.feedback = updates.feedback;
+    
+    // Safely copy sources if present
+    if (updates.sources !== undefined) {
+        cleanUpdates.sources = updates.sources.map(s => ({ title: String(s.title || ''), uri: String(s.uri || '') }));
+    }
+
     setSessions(prev => prev.map(s => s.id === sessionId ? {
       ...s,
-      messages: s.messages.map(m => m.id === messageId ? { ...m, ...updates } : m),
+      messages: s.messages.map(m => m.id === messageId ? { ...m, ...cleanUpdates } : m),
       updatedAt: new Date()
     } : s));
   }, []);
@@ -162,6 +179,10 @@ export const useWAI = () => {
     });
   }, [activeSessionId]);
 
+  const giveFeedback = useCallback((sessionId: string, messageId: string, feedback: 'like' | 'dislike') => {
+      updateMessage(sessionId, messageId, { feedback });
+  }, [updateMessage]);
+
   const handleImageGen = async (prompt: string, sessionId: string) => {
     const placeholderId = Math.random().toString(36).substr(2, 9);
     addMessage('model', 'Creating your masterpiece...', 'loading-image', undefined, sessionId, placeholderId);
@@ -169,99 +190,177 @@ export const useWAI = () => {
     setIsProcessing(true);
     const apiKey = getApiKey();
     if (!apiKey) {
-        updateMessage(sessionId, placeholderId, { type: 'text', content: "API Key is missing (VITE_API_KEY not found)." });
+        updateMessage(sessionId, placeholderId, { type: 'text', content: "System Error: API Key is missing." });
         setIsProcessing(false);
         return;
     }
-
     const ai = new GoogleGenAI({ apiKey });
 
+    // Enhanced prompt engineering: Stronger focus on Realistic Peshawar City, History, and Cinematic Quality
+    const enhancedPrompt = `${prompt} . Hyper-realistic cinematic shot of Peshawar City, Pakistan. Featuring the majestic Bala Hissar Fort, historical Qissa Khwani Bazaar, and the Khyber Pass. Golden hour lighting, 8k resolution, intricate architectural details, vibrant culture, dramatic mountains in the background, photorealistic masterpiece, national geographic style.`;
+
     try {
-      // Primary Method: Gemini 2.5 Flash Image
-      // This is the default "Nano Banana" model for image generation.
+      // 1. Try Gemini 2.5 Flash Image first
       try {
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash-image', 
-            contents: [{ parts: [{ text: prompt }] }]
+            contents: [{ parts: [{ text: enhancedPrompt }] }]
         });
-        
         const parts = response.candidates?.[0]?.content?.parts;
-        let imageFound = false;
-
         if (parts) {
             for (const part of parts) {
             if (part.inlineData) {
-                updateMessage(sessionId, placeholderId, {
-                    type: 'image',
-                    content: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`
-                });
-                imageFound = true;
+                updateMessage(sessionId, placeholderId, { type: 'image', content: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}` });
                 setIsProcessing(false);
                 return; 
             }
             }
         }
-        if (!imageFound) throw new Error("No image data returned from Gemini 2.5");
-      } catch (primaryErr) {
-        console.warn("Gemini 2.5 failed, switching to Imagen 3 fallback:", primaryErr);
-        
-        // Fallback Method: Imagen 3.0
-        // If Gemini 2.5 fails (quota, availability, or text response), try dedicated Imagen model.
+        throw new Error("No image data from Gemini 2.5");
+      } catch (err) {
+        // console.warn("Gemini 2.5 failed, trying Imagen 3...", err);
+        // 2. Fallback to Imagen 3.0
         const response = await ai.models.generateImages({
             model: 'imagen-3.0-generate-001',
-            prompt: prompt,
-            config: {
-                numberOfImages: 1,
-                aspectRatio: '1:1',
-                outputMimeType: 'image/jpeg'
-            }
+            prompt: enhancedPrompt,
+            config: { numberOfImages: 1, aspectRatio: '1:1', outputMimeType: 'image/jpeg' }
         });
-        
         const b64 = response.generatedImages?.[0]?.image?.imageBytes;
         if (b64) {
-            updateMessage(sessionId, placeholderId, {
-                type: 'image',
-                content: `data:image/jpeg;base64,${b64}`
-            });
+            updateMessage(sessionId, placeholderId, { type: 'image', content: `data:image/jpeg;base64,${b64}` });
             setIsProcessing(false);
             return;
         }
-        throw new Error("Fallback generation failed.");
+        throw new Error("Imagen generation failed.");
       }
-
     } catch (e: any) {
-      updateMessage(sessionId, placeholderId, { type: 'text', content: `Unable to generate image: ${formatErrorMessage(e)}` });
+      updateMessage(sessionId, placeholderId, { type: 'text', content: `Image Generation Error: ${formatErrorMessage(e)}` });
     } finally {
       setIsProcessing(false);
     }
   };
 
-  const connect = useCallback(async () => {
-    const apiKey = getApiKey();
-    if (!apiKey) {
-      alert("System Alert: API Key is missing. Please check Netlify settings for VITE_API_KEY.");
-      return;
+  const disconnect = useCallback(() => {
+    // Graceful cleanup to prevent black screens/crashes
+    if (sessionPromiseRef.current) {
+        sessionPromiseRef.current.then(s => s.close()).catch(e => console.warn("Session close error:", e));
+        sessionPromiseRef.current = null;
+    }
+    
+    // Stop Media Tracks
+    if (mediaStreamRef.current) {
+      mediaStreamRef.current.getTracks().forEach(track => {
+          try { track.stop(); } catch(e) {}
+      });
+      mediaStreamRef.current = null;
     }
 
-    setConnectionState(ConnectionState.CONNECTING);
+    // Close Audio Contexts
+    if (inputContextRef.current && inputContextRef.current.state !== 'closed') {
+        inputContextRef.current.close().catch(e => {});
+        inputContextRef.current = null;
+    }
+    if (outputContextRef.current && outputContextRef.current.state !== 'closed') {
+        outputContextRef.current.close().catch(e => {});
+        outputContextRef.current = null;
+    }
+
+    audioSources.current.forEach(s => { try { s.stop(); } catch(e) {} });
+    audioSources.current.clear();
+
+    setConnectionState(ConnectionState.DISCONNECTED);
+    setIsSpeaking(false);
+    setIsProcessing(false);
+    setVolumeLevel(0);
+  }, []);
+
+  const connect = useCallback(async () => {
+    const apiKey = getApiKey();
     let currentSessionId = activeSessionId;
     if (!currentSessionId) currentSessionId = createNewChat();
 
+    if (!apiKey) { 
+        addMessage('model', "System Error: API Key Missing. Please check configuration.", 'text', undefined, currentSessionId);
+        return; 
+    }
+
+    disconnect(); // Ensure clean slate
+
+    setConnectionState(ConnectionState.CONNECTING);
+    
+    // ------------------------------------------------------------------
+    // 1. BROWSER MEDIA PERMISSIONS (Microphone)
+    // ------------------------------------------------------------------
+    let stream: MediaStream;
+    try {
+      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+         throw new Error("Microphone access is not supported in this browser.");
+      }
+
+      // Try optimal constraints first
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({ 
+          audio: { 
+              echoCancellation: true, 
+              noiseSuppression: true, 
+              autoGainControl: true
+          } 
+        });
+      } catch (err) {
+        console.warn("Optimal audio constraints failed, falling back to basic audio.", err);
+        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+      }
+      mediaStreamRef.current = stream;
+
+    } catch (e: any) { 
+        console.error("Browser Media Error:", e);
+        disconnect();
+        
+        let errorMsg = "Microphone access failed.";
+        const errStr = String(e).toLowerCase();
+        const name = e.name || '';
+
+        if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || errStr.includes('permission denied')) {
+            errorMsg = "Browser Permission Denied: Please click the lock icon in your address bar and allow Microphone access.";
+        } else if (name === 'NotFoundError' || errStr.includes('found')) {
+             errorMsg = "Hardware Error: No microphone found. Please connect a microphone.";
+        } else {
+            errorMsg = `Browser Audio Error: ${formatErrorMessage(e)}`;
+        }
+
+        addMessage('model', errorMsg, 'text', undefined, currentSessionId!);
+        setConnectionState(ConnectionState.DISCONNECTED);
+        return; // STOP execution if Media fails
+    }
+
+    // ------------------------------------------------------------------
+    // 2. AUDIO CONTEXT SETUP (Only proceeds if Media was successful)
+    // ------------------------------------------------------------------
+    let inputCtx: AudioContext;
+    let outputCtx: AudioContext;
+    
+    try {
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        inputCtx = new AudioContextClass({ sampleRate: 16000 });
+        outputCtx = new AudioContextClass({ sampleRate: 24000 });
+
+        if (inputCtx.state === 'suspended') await inputCtx.resume();
+        if (outputCtx.state === 'suspended') await outputCtx.resume();
+
+        inputContextRef.current = inputCtx;
+        outputContextRef.current = outputCtx;
+    } catch (e) {
+        disconnect();
+        addMessage('model', "System Error: AudioContext could not be initialized.", 'text', undefined, currentSessionId!);
+        setConnectionState(ConnectionState.DISCONNECTED);
+        return;
+    }
+
+    // ------------------------------------------------------------------
+    // 3. API CONNECTION (Gemini Live)
+    // ------------------------------------------------------------------
     try {
       const ai = new GoogleGenAI({ apiKey });
-      
-      const inputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 16000 });
-      const outputCtx = new (window.AudioContext || (window as any).webkitAudioContext)({ sampleRate: 24000 });
-      
-      if (inputCtx.state === 'suspended') await inputCtx.resume();
-      if (outputCtx.state === 'suspended') await outputCtx.resume();
-
-      inputContextRef.current = inputCtx;
-      outputContextRef.current = outputCtx;
-      
-      const stream = await navigator.mediaDevices.getUserMedia({ 
-        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } 
-      });
 
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
@@ -274,22 +373,29 @@ export const useWAI = () => {
         callbacks: {
           onopen: () => {
             setConnectionState(ConnectionState.CONNECTED);
-            const source = inputCtx.createMediaStreamSource(stream);
-            const processor = inputCtx.createScriptProcessor(4096, 1, 1);
-            
-            processor.onaudioprocess = (e) => {
-              if (isSpeakingRef.current) return;
-              const inputData = e.inputBuffer.getChannelData(0);
-              let sum = 0;
-              for(let i=0; i<inputData.length; i++) sum += inputData[i] * inputData[i];
-              setVolumeLevel(Math.min(Math.sqrt(sum / inputData.length) * 10, 1)); 
-
-              sessionPromise.then(s => {
-                try { s.sendRealtimeInput({ media: createAudioBlob(inputData) }); } catch (err) { }
-              }).catch(() => {});
-            };
-            source.connect(processor);
-            processor.connect(inputCtx.destination);
+            try {
+                const source = inputCtx.createMediaStreamSource(stream);
+                const processor = inputCtx.createScriptProcessor(4096, 1, 1);
+                processor.onaudioprocess = (e) => {
+                  if (isSpeakingRef.current) return;
+                  const inputData = e.inputBuffer.getChannelData(0);
+                  
+                  if (inputData.length > 0) {
+                     let sum = 0;
+                     for(let i=0; i<inputData.length; i++) sum += inputData[i] * inputData[i];
+                     const rms = Math.sqrt(sum / inputData.length);
+                     setVolumeLevel(isNaN(rms) ? 0 : Math.min(rms * 10, 1)); 
+                  }
+                  
+                  sessionPromise.then(s => { 
+                      try { s.sendRealtimeInput({ media: createAudioBlob(inputData) }); } catch (err) { } 
+                  }).catch(() => {});
+                };
+                source.connect(processor);
+                processor.connect(inputCtx.destination);
+            } catch (audioErr) {
+                console.error("Audio Processing Error", audioErr);
+            }
           },
           onmessage: async (msg: LiveServerMessage) => {
             if (msg.serverContent?.interrupted) {
@@ -299,7 +405,6 @@ export const useWAI = () => {
               setIsSpeaking(false);
               transcriptionRef.current = { user: '', model: '' };
             }
-
             if (msg.serverContent?.inputTranscription?.text) transcriptionRef.current.user += msg.serverContent.inputTranscription.text;
             if (msg.serverContent?.outputTranscription?.text) transcriptionRef.current.model += msg.serverContent.outputTranscription.text;
             if (msg.serverContent?.turnComplete) {
@@ -308,7 +413,6 @@ export const useWAI = () => {
               if (model.trim()) addMessage('model', model, 'text', undefined, currentSessionId!);
               transcriptionRef.current = { user: '', model: '' };
             }
-
             const base64Audio = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
             if (base64Audio) {
               setIsSpeaking(true);
@@ -326,112 +430,138 @@ export const useWAI = () => {
               };
             }
           },
-          onclose: () => { setConnectionState(ConnectionState.DISCONNECTED); setIsSpeaking(false); },
+          onclose: () => { 
+              setConnectionState(ConnectionState.DISCONNECTED); 
+              setIsSpeaking(false); 
+          },
           onerror: (err: any) => { 
-            console.error("Live Connection Error:", err); 
-            setConnectionState(ConnectionState.ERROR); 
+              console.error("Session Error:", err);
+              setConnectionState(ConnectionState.DISCONNECTED);
+              addMessage('model', "Voice Uplink Interrupted: Connection lost.", 'text', undefined, currentSessionId!);
           }
         }
       });
       sessionPromiseRef.current = sessionPromise;
+      
+      // Catch initial connection errors (e.g. 403 Forbidden on Socket Handshake)
+      sessionPromise.catch((e: any) => {
+          console.error("API Connect Catch:", e);
+          disconnect();
+          const errStr = String(e).toLowerCase();
+          let errorMsg = "System Error: Unable to establish Voice Uplink.";
+          if (errStr.includes('permission') || errStr.includes('403')) {
+             errorMsg = "Access Denied: The API Key is invalid or lacks permission for 'gemini-2.5-flash-native-audio-preview'.";
+          }
+          addMessage('model', errorMsg, 'text', undefined, currentSessionId!);
+          setConnectionState(ConnectionState.DISCONNECTED);
+      });
+
     } catch (e: any) { 
-      console.error("Setup Error:", e); 
-      alert(`Connection Failed: ${formatErrorMessage(e)}`);
-      setConnectionState(ConnectionState.ERROR); 
+        console.error("General Connect Exception:", e);
+        disconnect();
+        addMessage('model', `System Error: ${formatErrorMessage(e)}`, 'text', undefined, currentSessionId!);
+        setConnectionState(ConnectionState.DISCONNECTED); 
     }
-  }, [addMessage, activeSessionId, createNewChat, updateMessage]);
+  }, [addMessage, activeSessionId, createNewChat, updateMessage, disconnect]);
 
   const sendTextMessage = async (text: string, imageData?: { data: string, mimeType: string }) => {
     const apiKey = getApiKey();
-    if (!apiKey) {
-      alert("API Key is missing. Check VITE_API_KEY in Netlify.");
-      return;
-    }
-
+    if (!apiKey) { alert("API Key Missing"); return; }
     if (!text.trim() && !imageData) return;
+
     let targetSessionId = activeSessionId;
     if (!targetSessionId) targetSessionId = createNewChat();
 
-    addMessage('user', text || "Analyzing Image Content", 'text', undefined, targetSessionId);
-    setIsProcessing(true);
+    addMessage('user', text || "Content Analysis", 'text', undefined, targetSessionId);
     
-    const isImageRequest = /(?:create|generate|draw|paint|render|make|design|illustrate).*(?:image|picture|photo|art|sketch|drawing|logo|poster|portrait|scene|background|wallpaper)/i.test(text);
+    // Check for Image Request - Broader regex to catch "Make Animation" as image request intent
+    const isImageRequest = /(?:create|generate|draw|design|make).*(?:image|picture|logo|art|animation)/i.test(text);
     
-    // Config: Image Gen ALWAYS uses tools. Normal chat uses Search, but we'll have a fallback.
-    const toolsConfig = isImageRequest 
-      ? [{ functionDeclarations: [imageTool] }] 
-      : [{ googleSearch: {} }];
-
-    try {
-      const ai = new GoogleGenAI({ apiKey });
-      const contents: any[] = [{ role: 'user', parts: [{ text: text || "Provide detailed analysis of this image." }] }];
-      if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
-      
-      // Attempt 1: Full Capability (With Tools)
-      const response = await ai.models.generateContent({
-        model: 'gemini-3-flash-preview', 
-        contents,
-        config: { 
-          systemInstruction: SYSTEM_INSTRUCTION, 
-          tools: toolsConfig 
-        }
-      });
-
-      let sources: GroundingSource[] = [];
-      const chunks = response.candidates?.[0]?.groundingMetadata?.groundingChunks;
-      if (chunks) {
-        sources = chunks
-          .filter(c => c.web?.uri && c.web?.title)
-          .map(c => ({ title: c.web!.title!, uri: c.web!.uri! }));
-      }
-
-      if (response.text) addMessage('model', response.text, 'text', sources.length > 0 ? sources : undefined, targetSessionId);
-      
-      const fc = response.candidates?.[0]?.content?.parts?.find(p => p.functionCall)?.functionCall;
-      if (fc && fc.name === 'generateImage') {
-        await handleImageGen(fc.args.prompt, targetSessionId);
-      }
-
-    } catch(e: any) { 
-        // --- SMART RETRY LOGIC ---
-        // If we hit a Quota/Capacity error AND we were using Google Search tools (not image gen),
-        // try again WITHOUT tools to ensure the user gets a text response.
-        const errorStr = JSON.stringify(e);
-        const isQuota = errorStr.includes('429') || errorStr.includes('RESOURCE_EXHAUSTED') || errorStr.includes('503') || errorStr.includes('Overloaded');
-        
-        if (isQuota && !isImageRequest && !imageData) {
-           console.warn("Quota hit with tools. Retrying without tools...");
-           try {
-              const aiRetry = new GoogleGenAI({ apiKey });
-              const retryResponse = await aiRetry.models.generateContent({
+    if (isImageRequest) {
+        setIsProcessing(true);
+        try {
+            const ai = new GoogleGenAI({ apiKey });
+            // Using a tool-based approach to confirm intent and get prompt
+            const response = await ai.models.generateContent({
                 model: 'gemini-3-flash-preview',
                 contents: [{ role: 'user', parts: [{ text }] }],
-                config: { systemInstruction: SYSTEM_INSTRUCTION } // No tools
-              });
-              if (retryResponse.text) {
-                addMessage('model', retryResponse.text, 'text', undefined, targetSessionId);
-                return; // Success on retry
-              }
-           } catch (retryError) {
-              // If retry also fails, show original error
-              addMessage('model', formatErrorMessage(e), 'text', undefined, targetSessionId);
-           }
-        } else {
-           addMessage('model', formatErrorMessage(e), 'text', undefined, targetSessionId); 
+                config: { tools: [{ functionDeclarations: [imageTool] }] }
+            });
+            const fc = response.candidates?.[0]?.content?.parts?.find(p => p.functionCall)?.functionCall;
+            if (fc && fc.name === 'generateImage') {
+                await handleImageGen(fc.args.prompt, targetSessionId);
+            } else {
+                // If it didn't call the tool, just display the text response (e.g. "I can't do animations but here is an image...")
+                addMessage('model', response.text || "I couldn't process the image request.", 'text', undefined, targetSessionId);
+            }
+        } catch(e) { addMessage('model', `System Error: ${formatErrorMessage(e)}`, 'text', undefined, targetSessionId); }
+        finally { setIsProcessing(false); }
+        return;
+    }
+
+    // NORMAL TEXT / CHAT REQUEST
+    setIsProcessing(true);
+    const streamId = Math.random().toString(36).substr(2, 9);
+    addMessage('model', '', 'text', undefined, targetSessionId, streamId);
+
+    try {
+        const ai = new GoogleGenAI({ apiKey });
+        const contents: any[] = [{ role: 'user', parts: [{ text }] }];
+        if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
+
+        let config: any = { systemInstruction: SYSTEM_INSTRUCTION };
+        
+        let modelName = 'gemini-3-flash-preview';
+
+        if (chatMode === 'search') {
+            config.tools = [{ googleSearch: {} }];
+        } else if (chatMode === 'thinking') {
+             config.thinkingConfig = { thinkingBudget: 1024 }; 
         }
+
+        const result = await ai.models.generateContentStream({
+            model: modelName,
+            contents,
+            config
+        });
+
+        let accumulatedText = '';
+        let sources: GroundingSource[] = [];
+
+        // Hybrid approach to handle potentially different SDK versions (iterable vs .stream property)
+        let streamIterable: any = result;
+        // @ts-ignore
+        if (!result[Symbol.asyncIterator] && result.stream) {
+            // @ts-ignore
+            streamIterable = result.stream;
+        }
+
+        for await (const chunk of streamIterable) {
+            const textChunk = chunk.text;
+            if (textChunk) {
+                accumulatedText += textChunk;
+                updateMessage(targetSessionId, streamId, { content: accumulatedText });
+            }
+            const gChunks = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks;
+            if (gChunks) {
+                const newSources = gChunks.filter((c: any) => c.web?.uri && c.web?.title).map((c: any) => ({ title: c.web!.title!, uri: c.web!.uri! }));
+                if (newSources.length > 0) sources = [...sources, ...newSources];
+            }
+        }
+        
+        updateMessage(targetSessionId, streamId, { content: accumulatedText, sources: sources.length > 0 ? sources : undefined });
+
+    } catch(e: any) {
+        updateMessage(targetSessionId, streamId, { content: `System Error: ${formatErrorMessage(e)}` });
     } finally {
-      setIsProcessing(false);
+        setIsProcessing(false);
     }
   };
 
   return { 
     messages: sessions.find(s => s.id === activeSessionId)?.messages || [], sessions, activeSessionId, setActiveSessionId, createNewChat, deleteSession,
-    connectionState, isSpeaking, volumeLevel, isProcessing, connect, disconnect: () => {
-      sessionPromiseRef.current?.then(s => s.close());
-      setConnectionState(ConnectionState.DISCONNECTED);
-      setIsSpeaking(false);
-      if (inputContextRef.current) inputContextRef.current.close();
-      if (outputContextRef.current) outputContextRef.current.close();
-    }, sendTextMessage 
+    connectionState, isSpeaking, volumeLevel, isProcessing, connect, disconnect, sendTextMessage,
+    chatMode, setChatMode,
+    giveFeedback // Export feedback function
   };
 };

@@ -6,6 +6,8 @@ export enum ConnectionState {
   ERROR = 'ERROR'
 }
 
+export type ChatMode = 'normal' | 'search' | 'thinking';
+
 export interface GroundingSource {
   title: string;
   uri: string;
@@ -18,6 +20,7 @@ export interface Message {
   content: string;
   timestamp: Date;
   sources?: GroundingSource[];
+  feedback?: 'like' | 'dislike';
 }
 
 export interface ChatSession {
