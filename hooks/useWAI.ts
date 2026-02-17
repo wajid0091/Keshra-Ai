@@ -17,12 +17,27 @@ const getApiKey = (): string => {
   return "";
 };
 
-const SYSTEM_INSTRUCTION = `
+// Helper to generate proper UUIDs to prevent DB type errors
+const generateUUID = () => {
+    if (typeof crypto !== 'undefined' && crypto.randomUUID) {
+        return crypto.randomUUID();
+    }
+    return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {
+        var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
+        return v.toString(16);
+    });
+};
+
+const getSystemInstruction = () => `
 You are Keshra AI, a sovereign intelligence developed exclusively by Wajid Ali from Peshawar, Pakistan.
+
+**CURRENT CONTEXT:**
+- **Current Date & Time:** ${new Date().toLocaleString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })}.
+- **Model Knowledge:** You must prioritize real-time information using the 'googleSearch' tool when users ask about current events, news, or dates.
 
 **CORE FUNCTIONS:**
 1. **Chat & Coding:** Provide clear, concise answers. When writing code, use proper markdown code blocks.
-2. **Real-time Info:** Use 'googleSearch' for news, weather, sports.
+2. **Real-time Info:** ALWAYS use 'googleSearch' for news, weather, sports, stock prices, or recent events.
 3. **Image Generation:** IF the user asks to "create", "draw", "generate", "design", or "make" an image or animation, you MUST call the 'generateImage' tool.
 
 **BEHAVIOR:**
@@ -44,23 +59,16 @@ const formatErrorMessage = (error: any): string => {
   const msg = error instanceof Error ? error.message : String(error);
   const lowerMsg = msg.toLowerCase();
   
-  // Detect Quota/Rate Limit issues and return a clean message
   if (lowerMsg.includes('429') || lowerMsg.includes('resource_exhausted') || lowerMsg.includes('quota')) {
       return "⚠️ Daily usage limit reached. Please try again later.";
   }
-
-  // Detect Safety/Policy blocking
   if (lowerMsg.includes('safety') || lowerMsg.includes('blocked') || lowerMsg.includes('policy')) {
       return "⚠️ Request blocked due to safety guidelines.";
   }
-
-  // Detect Network issues
   if (lowerMsg.includes('fetch') || lowerMsg.includes('network') || lowerMsg.includes('connection')) {
       return "⚠️ Network connection error. Please check your internet.";
   }
-
-  // Fallback for other technical errors (hide raw code)
-  return "⚠️ An unexpected error occurred. Please try again.";
+  return "⚠️ Service is currently busy. Please try again.";
 };
 
 export const useWAI = () => {
@@ -174,14 +182,14 @@ export const useWAI = () => {
      await supabase.auth.signOut();
   }, []);
 
-  // Use this to simply reset the view to the "New Chat" screen without creating a DB entry yet
   const resetChat = useCallback(() => {
     setActiveSessionId(null);
   }, []);
 
   const createNewChat = useCallback(async () => {
     const createLocalSession = () => {
-        const newId = Math.random().toString(36).substring(2, 9);
+        // Use UUID even for local sessions to prevent DB type errors if they login later
+        const newId = generateUUID(); 
         const newSession: ChatSession = { id: newId, title: 'New Conversation', messages: [], updatedAt: new Date() };
         setSessions(prev => [newSession, ...prev]);
         setActiveSessionId(newId);
@@ -203,7 +211,8 @@ export const useWAI = () => {
 
         if (error || !data) {
             console.warn("DB Create Failed, falling back to local:", error);
-            return createLocalSession(); // Fallback to ensure app keeps working
+            // This fallback is crucial for the login bug. If DB fails, we still let them chat.
+            return createLocalSession(); 
         }
 
         const newSession: ChatSession = { id: data.id, title: data.title, messages: [], updatedAt: new Date(data.created_at) };
@@ -219,7 +228,7 @@ export const useWAI = () => {
   const addMessage = useCallback(async (role: 'user' | 'model', content: string, type: 'text' | 'image' | 'loading-image' = 'text', sources?: GroundingSource[], targetSessionId?: string, customId?: string) => {
     const safeContent = (typeof content === 'string' || typeof content === 'number') ? String(content) : "Content Error";
     const safeSources = sources ? sources.map(s => ({ title: String(s.title || ''), uri: String(s.uri || '') })) : undefined;
-    const msgId = customId || Math.random().toString(36).substr(2, 9);
+    const msgId = customId || generateUUID();
     
     // Create optimistic message object
     const newMessage: Message = { 
@@ -233,22 +242,17 @@ export const useWAI = () => {
 
     let actualSessionId = targetSessionId || activeSessionId;
     
-    // CRITICAL FIX: If no session, create one locally AND add message immediately
+    // If no session, create one locally AND add message immediately
     if (!actualSessionId) {
-         // This block handles the edge case where addMessage is called without a session ID
-         // It mimics createNewChat logic locally to ensure UI updates
          const newId = await createNewChat(); 
          if (newId) actualSessionId = newId;
          else return; 
     }
 
-    // Update Local State (Immediate Feedback for both Guest & User)
+    // Update Local State (Immediate Feedback)
     setSessions(prev => {
-      // Check if session exists in state, if not, we might be in a race condition where createNewChat added it but state hasn't refreshed in this closure.
-      // But since we use functional update, 'prev' is fresh.
       const sessionExists = prev.some(s => s.id === actualSessionId);
       if (!sessionExists) {
-           // Fallback: If session not found (rare race condition), reconstruct it
            return [{
                id: actualSessionId!,
                title: safeContent.slice(0, 30) || 'New Conversation',
@@ -267,14 +271,12 @@ export const useWAI = () => {
 
     // If User is Logged In -> Save to DB (Fire and Forget)
     if (user && actualSessionId) {
-        // If the ID is a local temp ID (not a UUID), this insert might fail if DB expects UUID. 
-        // But we assume the fallback IDs work for local only.
-        // If it's a real DB ID, this works.
+        // Only attempt DB insert if it's a valid UUID (which it should be now)
         const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(actualSessionId);
         
         if (isUUID) {
             supabase.from('messages').insert([{
-                id: msgId, // Use the generated ID
+                id: msgId, 
                 chat_id: actualSessionId,
                 user_id: user.id,
                 role: role,
@@ -297,14 +299,14 @@ export const useWAI = () => {
   }, [activeSessionId, user, sessions, createNewChat]);
 
   const updateMessage = useCallback((sessionId: string, messageId: string, updates: Partial<Message>) => {
-    // Optimistic Update (Works for both)
+    // Optimistic Update
     setSessions(prev => prev.map(s => s.id === sessionId ? {
       ...s,
       messages: s.messages.map(m => m.id === messageId ? { ...m, ...updates } : m),
       updatedAt: new Date()
     } : s));
 
-    // DB Update (Only if User and valid UUID)
+    // DB Update
     if (user && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId)) {
         const dbUpdates: any = {};
         if (updates.content) dbUpdates.content = updates.content;
@@ -335,7 +337,7 @@ export const useWAI = () => {
   }, [updateMessage]);
 
   const handleImageGen = async (prompt: string, sessionId: string) => {
-    const placeholderId = Math.random().toString(36).substr(2, 9);
+    const placeholderId = generateUUID();
     addMessage('model', 'Creating your masterpiece...', 'loading-image', undefined, sessionId, placeholderId);
     
     setIsProcessing(true);
@@ -346,10 +348,11 @@ export const useWAI = () => {
         return;
     }
     const ai = new GoogleGenAI({ apiKey });
-    const enhancedPrompt = `${prompt} . Hyper-realistic cinematic shot of Peshawar City, Pakistan. Featuring the majestic Bala Hissar Fort, historical Qissa Khwani Bazaar, and the Khyber Pass. Golden hour lighting, 8k resolution, intricate architectural details, vibrant culture, dramatic mountains in the background, photorealistic masterpiece, national geographic style.`;
+    const enhancedPrompt = `${prompt} . Hyper-realistic cinematic shot. 8k resolution, intricate details, photorealistic masterpiece.`;
 
     try {
       try {
+        // Try Gemini 2.5 Image first (Fast & Good)
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash-image', 
             contents: [{ parts: [{ text: enhancedPrompt }] }]
@@ -366,6 +369,7 @@ export const useWAI = () => {
         }
         throw new Error("No image data from Gemini 2.5");
       } catch (err) {
+        // Fallback to Imagen 3 (High Quality)
         const response = await ai.models.generateImages({
             model: 'imagen-3.0-generate-001',
             prompt: enhancedPrompt,
@@ -380,7 +384,6 @@ export const useWAI = () => {
         throw new Error("Imagen generation failed.");
       }
     } catch (e: any) {
-      // Use clean formatted error without technical jargon
       updateMessage(sessionId, placeholderId, { type: 'text', content: formatErrorMessage(e) });
     } finally {
       setIsProcessing(false);
@@ -417,12 +420,7 @@ export const useWAI = () => {
     let currentSessionId = activeSessionId;
     if (!currentSessionId) currentSessionId = await createNewChat();
 
-    // --- GATEKEEPER: VOICE REQUIRES LOGIN ---
-    if (!user) {
-        // Return explicit error status so UI can show Login Modal
-        return "LOGIN_REQUIRED"; 
-    }
-
+    if (!user) return "LOGIN_REQUIRED"; 
     if (!apiKey) { 
         if (currentSessionId) addMessage('model', "System Error: API Key Missing.", 'text', undefined, currentSessionId);
         return; 
@@ -434,7 +432,7 @@ export const useWAI = () => {
     let stream: MediaStream;
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-         throw new Error("Microphone access is not supported in this browser.");
+         throw new Error("Microphone access is not supported.");
       }
       try {
         stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
@@ -448,8 +446,6 @@ export const useWAI = () => {
         const errStr = String(e).toLowerCase();
         if (errStr.includes('permission denied') || errStr.includes('notallowed')) {
             errorMsg = "Browser Permission Denied: Allow Microphone access.";
-        } else if (errStr.includes('notfound')) {
-             errorMsg = "No microphone found.";
         }
         if (currentSessionId) addMessage('model', errorMsg, 'text', undefined, currentSessionId);
         setConnectionState(ConnectionState.DISCONNECTED);
@@ -479,7 +475,7 @@ export const useWAI = () => {
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         config: {
           responseModalities: [Modality.AUDIO],
-          systemInstruction: SYSTEM_INSTRUCTION,
+          systemInstruction: getSystemInstruction(),
           speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
           tools: [{ googleSearch: {} }], 
         },
@@ -563,16 +559,11 @@ export const useWAI = () => {
     
     // Ensure Session Exists BEFORE sending message
     if (!targetSessionId) {
-         // Force creation. createNewChat now guarantees a return (local or DB)
          targetSessionId = await createNewChat();
-         if (!targetSessionId) return; // Should not happen with new logic
+         if (!targetSessionId) return; 
     }
 
-    // Now we have a valid targetSessionId. 
-    // addMessage handles both local state update and fire-and-forget DB sync
     addMessage('user', text || "Content Analysis", 'text', undefined, targetSessionId);
-    
-    // From here on, UI is updated. Processing continues in background.
     
     const isImageRequest = /(?:create|generate|draw|design|make).*(?:image|picture|logo|art|animation)/i.test(text);
     if (isImageRequest) {
@@ -591,7 +582,6 @@ export const useWAI = () => {
                 addMessage('model', response.text || "I couldn't process the image request.", 'text', undefined, targetSessionId);
             }
         } catch(e) { 
-            // Use clean error handling
             addMessage('model', formatErrorMessage(e), 'text', undefined, targetSessionId); 
         } finally { 
             setIsProcessing(false); 
@@ -600,7 +590,7 @@ export const useWAI = () => {
     }
 
     setIsProcessing(true);
-    const streamId = Math.random().toString(36).substr(2, 9);
+    const streamId = generateUUID();
     addMessage('model', '', 'text', undefined, targetSessionId, streamId);
 
     try {
@@ -608,10 +598,20 @@ export const useWAI = () => {
         const contents: any[] = [{ role: 'user', parts: [{ text }] }];
         if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
 
-        let config: any = { systemInstruction: SYSTEM_INSTRUCTION };
+        // Ensure we always use Google Search for regular chat to provide latest info
+        // and inject dynamic date context via System Instruction
+        let config: any = { 
+            systemInstruction: getSystemInstruction(),
+            tools: [{ googleSearch: {} }] 
+        };
+        
         let modelName = 'gemini-3-flash-preview';
-        if (chatMode === 'search') config.tools = [{ googleSearch: {} }];
-        else if (chatMode === 'thinking') config.thinkingConfig = { thinkingBudget: 1024 }; 
+        
+        // Mode overrides (Thinking mode disables Search)
+        if (chatMode === 'thinking') {
+             config.tools = []; // Clear tools
+             config.thinkingConfig = { thinkingBudget: 1024 }; 
+        }
 
         const result = await ai.models.generateContentStream({ model: modelName, contents, config });
         let accumulatedText = '';
@@ -635,7 +635,6 @@ export const useWAI = () => {
         }
         updateMessage(targetSessionId, streamId, { content: accumulatedText, sources: sources.length > 0 ? sources : undefined });
     } catch(e: any) {
-        // Use clean error handling
         updateMessage(targetSessionId, streamId, { content: formatErrorMessage(e) });
     } finally {
         setIsProcessing(false);
