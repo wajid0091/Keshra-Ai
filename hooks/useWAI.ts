@@ -17,12 +17,7 @@ const generateUUID = () => {
 
 // --- ROBUST API KEY LOADING ---
 const getApiKey = (): string => {
-  // 1. Check Local Storage (Manual Override via Settings)
-  const localKey = localStorage.getItem('USER_GEMINI_API_KEY');
-  if (localKey && localKey.trim().length > 10) return localKey;
-
-  // 2. Check process.env (Standard Node/Netlify/Build Env)
-  // We explicitly look for 'API_KEY' as requested
+  // 1. Check process.env (Standard Node/Netlify/Build Env)
   if (typeof process !== 'undefined' && process.env) {
     if (process.env.API_KEY) return process.env.API_KEY;
     // Fallbacks just in case
@@ -31,7 +26,7 @@ const getApiKey = (): string => {
     if (process.env.REACT_APP_API_KEY) return process.env.REACT_APP_API_KEY;
   }
 
-  // 3. Check import.meta.env (Vite Client Env)
+  // 2. Check import.meta.env (Vite Client Env)
   // @ts-ignore
   if (typeof import.meta !== 'undefined' && import.meta.env) {
     // @ts-ignore
@@ -42,7 +37,7 @@ const getApiKey = (): string => {
     if (import.meta.env.VITE_API_KEY) return import.meta.env.VITE_API_KEY;
   }
   
-  // 4. Global Window Fallback (Last resort)
+  // 3. Global Window Fallback (Last resort)
   if ((window as any).API_KEY) return (window as any).API_KEY;
 
   return "";
@@ -86,14 +81,14 @@ const formatErrorMessage = (error: any): string => {
 
   // Quota Errors
   if (lowerMsg.includes('429') || lowerMsg.includes('resource_exhausted') || lowerMsg.includes('quota')) {
-      return "⚠️ API Limit Reached. Please use a new API Key in Settings.";
+      return "⚠️ API Limit Reached. Switching to fallback models...";
   }
 
   // Safety/Network
   if (lowerMsg.includes('safety') || lowerMsg.includes('blocked')) return "⚠️ Request blocked due to safety guidelines.";
   if (lowerMsg.includes('fetch') || lowerMsg.includes('network')) return "⚠️ Network error. Check your internet.";
   
-  return "⚠️ Service busy. Try again or check Settings.";
+  return "⚠️ Service busy. Try again.";
 };
 
 export const useWAI = () => {
@@ -208,13 +203,8 @@ export const useWAI = () => {
     setActiveSessionId(null);
   }, []);
 
-  // Manual Key Setter
   const setManualApiKey = (key: string) => {
-      if (key.trim() === "") {
-          localStorage.removeItem('USER_GEMINI_API_KEY');
-      } else {
-          localStorage.setItem('USER_GEMINI_API_KEY', key.trim());
-      }
+      // Deprecated but kept to prevent build errors if referenced elsewhere
   };
 
   const createNewChat = useCallback(async () => {
@@ -352,33 +342,40 @@ export const useWAI = () => {
     setIsProcessing(true);
     const apiKey = getApiKey();
     if (!apiKey) {
-        updateMessage(sessionId, placeholderId, { type: 'text', content: "⚠️ API Key missing. Please set it in Settings." });
+        updateMessage(sessionId, placeholderId, { type: 'text', content: "⚠️ API Key missing. Please check configuration." });
         setIsProcessing(false);
         return;
     }
     const ai = new GoogleGenAI({ apiKey });
     const enhancedPrompt = `${prompt} . Hyper-realistic cinematic shot. 8k resolution, intricate details, photorealistic masterpiece.`;
 
-    try {
-      try {
-        // Primary: Gemini 2.5 Flash Image (Fast & Reliable with simple key)
-        const response = await ai.models.generateContent({
-            model: 'gemini-2.5-flash-image', 
-            contents: [{ parts: [{ text: enhancedPrompt }] }]
-        });
-        const parts = response.candidates?.[0]?.content?.parts;
-        if (parts) {
-            for (const part of parts) {
-            if (part.inlineData) {
-                updateMessage(sessionId, placeholderId, { type: 'image', content: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}` });
-                setIsProcessing(false);
-                return; 
+    // FALLBACK LOGIC FOR IMAGES: High Quality -> Flash Image -> Error
+    const imageModels = ['gemini-3-pro-image-preview', 'gemini-2.5-flash-image'];
+
+    for (const model of imageModels) {
+        try {
+            const response = await ai.models.generateContent({
+                model: model, 
+                contents: [{ parts: [{ text: enhancedPrompt }] }]
+            });
+            const parts = response.candidates?.[0]?.content?.parts;
+            if (parts) {
+                for (const part of parts) {
+                    if (part.inlineData) {
+                        updateMessage(sessionId, placeholderId, { type: 'image', content: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}` });
+                        setIsProcessing(false);
+                        return; 
+                    }
+                }
             }
-            }
+        } catch (err) {
+            console.warn(`Image Model ${model} failed, trying next...`);
+            continue; // Try next model
         }
-        throw new Error("No image data from Gemini 2.5");
-      } catch (err) {
-        // Fallback: Imagen 3 (If available on key)
+    }
+
+    // If all fail, try Imagen as last resort fallback or show error
+    try {
         const response = await ai.models.generateImages({
             model: 'imagen-3.0-generate-001',
             prompt: enhancedPrompt,
@@ -390,13 +387,10 @@ export const useWAI = () => {
             setIsProcessing(false);
             return;
         }
-        throw new Error("Imagen generation failed.");
-      }
-    } catch (e: any) {
-      updateMessage(sessionId, placeholderId, { type: 'text', content: formatErrorMessage(e) });
-    } finally {
-      setIsProcessing(false);
+    } catch(e: any) {
+        updateMessage(sessionId, placeholderId, { type: 'text', content: formatErrorMessage(e) });
     }
+    setIsProcessing(false);
   };
 
   const disconnect = useCallback(() => {
@@ -433,7 +427,7 @@ export const useWAI = () => {
     
     // Strict Check: No Key = No Voice
     if (!apiKey) { 
-        if (currentSessionId) addMessage('model', "⚠️ API Key Missing. Please set it in Settings.", 'text', undefined, currentSessionId);
+        if (currentSessionId) addMessage('model', "⚠️ API Key Missing. Please check configuration.", 'text', undefined, currentSessionId);
         return; 
     }
 
@@ -561,7 +555,7 @@ export const useWAI = () => {
 
   const sendTextMessage = useCallback(async (text: string, imageData?: { data: string, mimeType: string }) => {
     const apiKey = getApiKey();
-    if (!apiKey) { alert("Please set API Key in Settings."); return; }
+    if (!apiKey) { alert("Please check API Key in configuration."); return; }
     if (!text.trim() && !imageData) return;
 
     let targetSessionId = activeSessionId;
@@ -576,18 +570,8 @@ export const useWAI = () => {
     if (isImageRequest) {
         setIsProcessing(true);
         try {
-            const ai = new GoogleGenAI({ apiKey });
-            const response = await ai.models.generateContent({
-                model: 'gemini-3-flash-preview',
-                contents: [{ role: 'user', parts: [{ text }] }],
-                config: { tools: [{ functionDeclarations: [imageTool] }] }
-            });
-            const fc = response.candidates?.[0]?.content?.parts?.find(p => p.functionCall)?.functionCall;
-            if (fc && fc.name === 'generateImage') {
-                await handleImageGen(fc.args.prompt, targetSessionId);
-            } else {
-                addMessage('model', response.text || "I couldn't process the image request.", 'text', undefined, targetSessionId);
-            }
+            // Use same fallback logic inside handleImageGen for the tool call
+            await handleImageGen(text, targetSessionId);
         } catch(e) { 
             addMessage('model', formatErrorMessage(e), 'text', undefined, targetSessionId); 
         } finally { 
@@ -600,48 +584,61 @@ export const useWAI = () => {
     const streamId = generateUUID();
     addMessage('model', '', 'text', undefined, targetSessionId, streamId);
 
-    try {
-        const ai = new GoogleGenAI({ apiKey });
-        const contents: any[] = [{ role: 'user', parts: [{ text }] }];
-        if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
+    // FALLBACK LOGIC FOR TEXT: Gemini 3 Flash -> Gemini 2.5 Flash -> Gemini Flash Lite (1.5 equivalent)
+    const models = ['gemini-3-flash-preview', 'gemini-2.5-flash-latest', 'gemini-flash-lite-latest'];
 
-        let config: any = { 
-            systemInstruction: getSystemInstruction(),
-            tools: [{ googleSearch: {} }] 
-        };
-        
-        let modelName = 'gemini-3-flash-preview';
-        if (chatMode === 'thinking') {
-             config.tools = []; 
-             config.thinkingConfig = { thinkingBudget: 1024 }; 
-        }
+    for (const modelName of models) {
+        try {
+            const ai = new GoogleGenAI({ apiKey });
+            const contents: any[] = [{ role: 'user', parts: [{ text }] }];
+            if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
 
-        const result = await ai.models.generateContentStream({ model: modelName, contents, config });
-        let accumulatedText = '';
-        let sources: GroundingSource[] = [];
-        let streamIterable: any = result;
-        // @ts-ignore
-        if (!result[Symbol.asyncIterator] && result.stream) streamIterable = result.stream;
-
-        for await (const chunk of streamIterable) {
-            const textChunk = chunk.text;
-            if (textChunk) {
-                accumulatedText += textChunk;
-                updateMessage(targetSessionId, streamId, { content: accumulatedText });
-            }
-            const gChunks = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks;
-            if (gChunks) {
-                const newSources = gChunks.filter((c: any) => c.web?.uri && c.web?.title).map((c: any) => ({ title: c.web!.title!, uri: c.web!.uri! }));
-                if (newSources.length > 0) sources = [...sources, ...newSources];
-            }
+            let config: any = { 
+                systemInstruction: getSystemInstruction(),
+                tools: [{ googleSearch: {} }] 
+            };
             
+            // Lite models might support different features, but Search is generally available on standard Flash models.
+            // Adjust config for Thinking Mode
+            if (chatMode === 'thinking' && modelName.includes('gemini-3')) {
+                config.tools = []; 
+                config.thinkingConfig = { thinkingBudget: 1024 }; 
+            } else if (chatMode === 'thinking') {
+                 // Downgrade thinking request to normal search for non-3 models
+                 config.tools = [{ googleSearch: {} }];
+            }
+
+            const result = await ai.models.generateContentStream({ model: modelName, contents, config });
+            let accumulatedText = '';
+            let sources: GroundingSource[] = [];
+            let streamIterable: any = result;
+            // @ts-ignore
+            if (!result[Symbol.asyncIterator] && result.stream) streamIterable = result.stream;
+
+            for await (const chunk of streamIterable) {
+                const textChunk = chunk.text;
+                if (textChunk) {
+                    accumulatedText += textChunk;
+                    updateMessage(targetSessionId, streamId, { content: accumulatedText });
+                }
+                const gChunks = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks;
+                if (gChunks) {
+                    const newSources = gChunks.filter((c: any) => c.web?.uri && c.web?.title).map((c: any) => ({ title: c.web!.title!, uri: c.web!.uri! }));
+                    if (newSources.length > 0) sources = [...sources, ...newSources];
+                }
+            }
+            updateMessage(targetSessionId, streamId, { content: accumulatedText, sources: sources.length > 0 ? sources : undefined });
+            return; // Success, exit loop
+        } catch(e: any) {
+            console.warn(`Model ${modelName} failed, trying next... Error:`, e);
+            if (models.indexOf(modelName) === models.length - 1) {
+                // Last model failed
+                updateMessage(targetSessionId, streamId, { content: formatErrorMessage(e) });
+            }
+            // Continue to next model
         }
-        updateMessage(targetSessionId, streamId, { content: accumulatedText, sources: sources.length > 0 ? sources : undefined });
-    } catch(e: any) {
-        updateMessage(targetSessionId, streamId, { content: formatErrorMessage(e) });
-    } finally {
-        setIsProcessing(false);
     }
+    setIsProcessing(false);
   }, [user, activeSessionId, createNewChat, addMessage, updateMessage, chatMode]); 
 
   return { 

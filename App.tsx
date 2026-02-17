@@ -6,9 +6,9 @@ import { supabase } from './lib/supabase';
 import { 
   Mic, Send, Search, Image as ImageIcon, Sparkles, 
   Plus, MessageSquare, Trash2, Menu, X, 
-  Settings, Moon, Sun, Copy, Check, Download, Paperclip, Loader2,
+  Moon, Sun, Copy, Check, Download, Paperclip, Loader2,
   FileText, Lightbulb, BarChart, ExternalLink, Zap, Brain, Globe, ChevronUp,
-  ThumbsUp, ThumbsDown, LogOut, Lock, User, Mail, Key
+  ThumbsUp, ThumbsDown, LogOut, Lock, User, Mail
 } from 'lucide-react';
 
 // --- Dedicated CodeBlock Component ---
@@ -61,46 +61,6 @@ const CodeBlock = memo(({ language, code }: { language: string, code: string }) 
     </div>
   );
 });
-
-// --- Settings Modal (API Key Fix) ---
-const SettingsModal = ({ onClose, onSave }: { onClose: () => void, onSave: (key: string) => void }) => {
-    const [key, setKey] = useState('');
-    
-    useEffect(() => {
-        const saved = localStorage.getItem('USER_GEMINI_API_KEY');
-        if (saved) setKey(saved);
-    }, []);
-
-    const handleSave = () => {
-        onSave(key);
-        onClose();
-        alert("API Key Updated! The app will now use your custom key.");
-    };
-
-    return (
-        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/90 backdrop-blur-md p-4 animate-in fade-in duration-300">
-             <div className="w-full max-w-sm p-6 rounded-3xl border border-white/10 bg-[#121214] shadow-2xl relative animate-in zoom-in-95 duration-300">
-                <button onClick={onClose} className="absolute top-4 right-4 p-2 rounded-full hover:bg-white/10 text-slate-400 hover:text-white transition-colors"><X className="w-5 h-5" /></button>
-                <h2 className="text-xl font-black text-white mb-2">Settings</h2>
-                <p className="text-xs text-slate-400 mb-6">If you are facing "Limit Reached" or connection errors on Netlify, enter your own API key here.</p>
-                
-                <div className="space-y-4">
-                    <div>
-                        <label className="block text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1 ml-1">Gemini API Key</label>
-                        <input type="password" value={key} onChange={e => setKey(e.target.value)} 
-                          className="w-full p-3 rounded-xl bg-white/5 border border-white/10 focus:border-cyan-500 outline-none transition-all font-mono text-white text-sm focus:bg-white/10" placeholder="AIzaSy..." />
-                    </div>
-                    <button onClick={handleSave} className="w-full py-3 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-bold transition-all shadow-lg shadow-cyan-900/20">
-                        Save Configuration
-                    </button>
-                    <button onClick={() => { localStorage.removeItem('USER_GEMINI_API_KEY'); setKey(''); alert("Key Cleared"); onClose(); }} className="w-full py-2 text-xs text-red-500 font-bold hover:bg-red-500/10 rounded-lg">
-                        Clear Saved Key
-                    </button>
-                </div>
-             </div>
-        </div>
-    );
-}
 
 // --- Auth Modal ---
 const AuthModal = ({ onClose, defaultMode = 'login' }: { onClose: () => void, defaultMode?: 'login' | 'signup' }) => {
@@ -219,7 +179,7 @@ const App: React.FC = () => {
   const { 
     messages, sessions, activeSessionId, setActiveSessionId, resetChat, deleteSession,
     connectionState, isSpeaking, volumeLevel, isProcessing, connect, disconnect, sendTextMessage,
-    chatMode, setChatMode, giveFeedback, user, username, signOut, setManualApiKey
+    chatMode, setChatMode, giveFeedback, user, username, signOut
   } = useWAI();
 
   const [inputText, setInputText] = useState('');
@@ -228,7 +188,6 @@ const App: React.FC = () => {
   const [theme, setTheme] = useState<'light' | 'dark'>('dark'); 
   const [showModeMenu, setShowModeMenu] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
-  const [showSettingsModal, setShowSettingsModal] = useState(false);
   
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -345,7 +304,6 @@ const App: React.FC = () => {
     <div className={`flex h-full w-full ${textColor} font-sans overflow-hidden transition-colors duration-300 ${theme === 'dark' ? 'dark' : ''}`}>
       
       {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} />}
-      {showSettingsModal && <SettingsModal onClose={() => setShowSettingsModal(false)} onSave={setManualApiKey} />}
 
       {/* Sidebar */}
       <aside className={`fixed inset-y-0 left-0 z-[100] shrink-0 h-full ${sidebarBg} ${borderCol} border-r shadow-2xl lg:shadow-none transition-transform duration-300 ${showSidebar ? 'translate-x-0' : '-translate-x-full'} lg:static lg:translate-x-0 lg:flex lg:flex-col`}>
@@ -382,9 +340,6 @@ const App: React.FC = () => {
           </div>
 
           <div className={`mt-auto pt-6 border-t ${borderCol} space-y-2`}>
-             <button onClick={() => setShowSettingsModal(true)} className={`flex items-center gap-3 w-full p-3 rounded-xl hover:bg-slate-50 dark:hover:bg-white/5 transition-all text-[13px] font-bold ${textColor}`}>
-               <Key className="w-4 h-4" /> API Settings
-             </button>
              <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className={`flex items-center gap-3 w-full p-3 rounded-xl hover:bg-slate-50 dark:hover:bg-white/5 transition-all text-[13px] font-bold ${textColor}`}>
                {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />} {theme === 'dark' ? 'Light Theme' : 'Dark Theme'}
              </button>
