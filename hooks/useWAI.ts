@@ -4,7 +4,7 @@ import { ConnectionState, Message, GroundingSource, ChatSession, ChatMode } from
 import { createAudioBlob, decode, decodeAudioData } from '../utils/audioUtils';
 import { supabase } from '../lib/supabase';
 
-// Helper to generate proper UUIDs to prevent DB type errors
+// Helper to generate proper UUIDs
 const generateUUID = () => {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) {
         return crypto.randomUUID();
@@ -15,30 +15,26 @@ const generateUUID = () => {
     });
 };
 
-// --- ROBUST API KEY LOADING ---
+// --- ULTRA ROBUST API KEY LOADING FOR NETLIFY/VITE ---
 const getApiKey = (): string => {
-  // 1. Check process.env (Standard Node/Netlify/Build Env)
+  // 1. Try Standard Vite Environment (import.meta.env)
+  // Check for 'API_KEY' specifically as requested
+  // @ts-ignore
+  if (import.meta.env?.API_KEY) return import.meta.env.API_KEY;
+  // @ts-ignore
+  if (import.meta.env?.VITE_API_KEY) return import.meta.env.VITE_API_KEY;
+  
+  // 2. Try Process Environment (Standard Node/Build injection)
   if (typeof process !== 'undefined' && process.env) {
     if (process.env.API_KEY) return process.env.API_KEY;
-    // Fallbacks just in case
     if (process.env.VITE_API_KEY) return process.env.VITE_API_KEY;
     // @ts-ignore
     if (process.env.REACT_APP_API_KEY) return process.env.REACT_APP_API_KEY;
   }
 
-  // 2. Check import.meta.env (Vite Client Env)
-  // @ts-ignore
-  if (typeof import.meta !== 'undefined' && import.meta.env) {
-    // @ts-ignore
-    if (import.meta.env.API_KEY) return import.meta.env.API_KEY; // Direct access
-    // @ts-ignore
-    if (import.meta.env['API_KEY']) return import.meta.env['API_KEY']; // Bracket access
-    // @ts-ignore
-    if (import.meta.env.VITE_API_KEY) return import.meta.env.VITE_API_KEY;
-  }
-  
-  // 3. Global Window Fallback (Last resort)
+  // 3. Try Global Window Objects (Runtime Injection)
   if ((window as any).API_KEY) return (window as any).API_KEY;
+  if ((window as any).process?.env?.API_KEY) return (window as any).process.env.API_KEY;
 
   return "";
 };
@@ -74,28 +70,21 @@ const formatErrorMessage = (error: any): string => {
   const msg = error instanceof Error ? error.message : String(error);
   const lowerMsg = msg.toLowerCase();
   
-  // Specific Key Errors
-  if (lowerMsg.includes('api key') || lowerMsg.includes('400') || lowerMsg.includes('invalid') || lowerMsg.includes('unauthenticated')) {
-      return "⚠️ Invalid API Key. Please check your settings or environment variables.";
+  if (lowerMsg.includes('api key') || lowerMsg.includes('400') || lowerMsg.includes('unauthenticated')) {
+      return "⚠️ System Error: Authentication failed. Please check environment configuration.";
   }
-
-  // Quota Errors
   if (lowerMsg.includes('429') || lowerMsg.includes('resource_exhausted') || lowerMsg.includes('quota')) {
-      return "⚠️ API Limit Reached. Switching to fallback models...";
+      return "⚠️ Capacity reached. Switching to backup systems...";
   }
-
-  // Safety/Network
-  if (lowerMsg.includes('safety') || lowerMsg.includes('blocked')) return "⚠️ Request blocked due to safety guidelines.";
-  if (lowerMsg.includes('fetch') || lowerMsg.includes('network')) return "⚠️ Network error. Check your internet.";
+  if (lowerMsg.includes('fetch') || lowerMsg.includes('network')) return "⚠️ Network error. Check your connection.";
   
-  return "⚠️ Service busy. Try again.";
+  return "⚠️ Service busy. Please try again.";
 };
 
 export const useWAI = () => {
   const [user, setUser] = useState<any>(null);
   const [username, setUsername] = useState<string>('');
   
-  // Data State
   const [sessions, setSessions] = useState<ChatSession[]>([]);
   const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
@@ -116,7 +105,7 @@ export const useWAI = () => {
 
   useEffect(() => { isSpeakingRef.current = isSpeaking; }, [isSpeaking]);
 
-  // --- Auth Listener ---
+  // Auth Listener
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
@@ -134,78 +123,43 @@ export const useWAI = () => {
       } else if (session?.user?.email) {
         setUsername(session.user.email.split('@')[0]);
       }
-      
       if (!session) {
         setSessions([]);
         setActiveSessionId(null);
       }
     });
-
     return () => subscription.unsubscribe();
   }, []);
 
-  // --- Load Chats ---
+  // Load Chats
   useEffect(() => {
     if (!user) return;
-
     const loadData = async () => {
-      const { data: chatData, error: chatError } = await supabase
-        .from('chats')
-        .select('*')
-        .eq('user_id', user.id)
-        .order('created_at', { ascending: false });
-
-      if (chatError) {
-          console.error("Error fetching chats:", chatError);
-          return;
-      }
-      
+      const { data: chatData } = await supabase.from('chats').select('*').eq('user_id', user.id).order('created_at', { ascending: false });
       const loadedSessions: ChatSession[] = [];
-
       if (chatData) {
           for (const chat of chatData) {
-              const { data: msgData } = await supabase
-                  .from('messages')
-                  .select('*')
-                  .eq('chat_id', chat.id)
-                  .order('created_at', { ascending: true });
-              
+              const { data: msgData } = await supabase.from('messages').select('*').eq('chat_id', chat.id).order('created_at', { ascending: true });
               loadedSessions.push({
                   id: chat.id,
                   title: chat.title || 'New Conversation',
                   updatedAt: new Date(chat.updated_at),
                   messages: (msgData || []).map((m: any) => ({
-                      id: m.id,
-                      role: m.role,
-                      content: m.content,
-                      type: m.type,
-                      timestamp: new Date(m.created_at),
-                      sources: typeof m.sources === 'string' ? JSON.parse(m.sources) : m.sources,
-                      feedback: m.feedback
+                      id: m.id, role: m.role, content: m.content, type: m.type, timestamp: new Date(m.created_at),
+                      sources: typeof m.sources === 'string' ? JSON.parse(m.sources) : m.sources, feedback: m.feedback
                   }))
               });
           }
       }
       setSessions(loadedSessions);
-      if (loadedSessions.length > 0 && !activeSessionId) {
-          setActiveSessionId(loadedSessions[0].id);
-      }
+      if (loadedSessions.length > 0 && !activeSessionId) setActiveSessionId(loadedSessions[0].id);
     };
-
     loadData();
   }, [user]);
 
-  const signOut = useCallback(async () => {
-     await supabase.auth.signOut();
-  }, []);
-
-  const resetChat = useCallback(() => {
-    setActiveSessionId(null);
-  }, []);
-
-  const setManualApiKey = (key: string) => {
-      // Deprecated but kept to prevent build errors if referenced elsewhere
-  };
+  const signOut = useCallback(async () => { await supabase.auth.signOut(); }, []);
+  const resetChat = useCallback(() => { setActiveSessionId(null); }, []);
+  const setManualApiKey = (key: string) => { /* Disabled */ };
 
   const createNewChat = useCallback(async () => {
     const createLocalSession = () => {
@@ -215,112 +169,43 @@ export const useWAI = () => {
         setActiveSessionId(newId);
         return newId;
     };
-
     if (!user) return createLocalSession();
-
     try {
-        const { data, error } = await supabase
-            .from('chats')
-            .insert([{ user_id: user.id, title: 'New Conversation' }])
-            .select()
-            .single();
-
-        if (error || !data) {
-            console.warn("DB Create Failed, falling back to local:", error);
-            return createLocalSession(); 
-        }
-
+        const { data, error } = await supabase.from('chats').insert([{ user_id: user.id, title: 'New Conversation' }]).select().single();
+        if (error || !data) return createLocalSession();
         const newSession: ChatSession = { id: data.id, title: data.title, messages: [], updatedAt: new Date(data.created_at) };
         setSessions(prev => [newSession, ...prev]);
         setActiveSessionId(data.id);
         return data.id;
-    } catch (e) {
-        return createLocalSession(); 
-    }
+    } catch (e) { return createLocalSession(); }
   }, [user]);
 
   const addMessage = useCallback(async (role: 'user' | 'model', content: string, type: 'text' | 'image' | 'loading-image' = 'text', sources?: GroundingSource[], targetSessionId?: string, customId?: string) => {
     const safeContent = (typeof content === 'string' || typeof content === 'number') ? String(content) : "Content Error";
-    const safeSources = sources ? sources.map(s => ({ title: String(s.title || ''), uri: String(s.uri || '') })) : undefined;
     const msgId = customId || generateUUID();
-    
-    const newMessage: Message = { 
-      id: msgId, 
-      role, 
-      content: safeContent, 
-      type, 
-      timestamp: new Date(), 
-      sources: safeSources
-    };
-
+    const newMessage: Message = { id: msgId, role, content: safeContent, type, timestamp: new Date(), sources };
     let actualSessionId = targetSessionId || activeSessionId;
     if (!actualSessionId) {
          const newId = await createNewChat(); 
-         if (newId) actualSessionId = newId;
-         else return; 
+         if (newId) actualSessionId = newId; else return; 
     }
-
     setSessions(prev => {
       const sessionExists = prev.some(s => s.id === actualSessionId);
-      if (!sessionExists) {
-           return [{
-               id: actualSessionId!,
-               title: safeContent.slice(0, 30) || 'New Conversation',
-               messages: [newMessage],
-               updatedAt: new Date()
-           }, ...prev];
-      }
-      return prev.map(s => s.id === actualSessionId ? {
-        ...s,
-        messages: [...s.messages, newMessage],
-        updatedAt: new Date(),
-        title: s.messages.length === 0 && role === 'user' ? safeContent.slice(0, 30) : s.title
-      } : s);
+      if (!sessionExists) return [{ id: actualSessionId!, title: safeContent.slice(0, 30) || 'New Conversation', messages: [newMessage], updatedAt: new Date() }, ...prev];
+      return prev.map(s => s.id === actualSessionId ? { ...s, messages: [...s.messages, newMessage], updatedAt: new Date(), title: s.messages.length === 0 && role === 'user' ? safeContent.slice(0, 30) : s.title } : s);
     });
-
-    if (user && actualSessionId) {
-        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(actualSessionId);
-        if (isUUID) {
-            supabase.from('messages').insert([{
-                id: msgId, 
-                chat_id: actualSessionId,
-                user_id: user.id,
-                role: role,
-                content: safeContent,
-                type: type,
-                sources: safeSources ? JSON.stringify(safeSources) : null,
-            }]).then(({ error }) => {
-                if (error) console.error("Supabase Insert Error:", error);
-            });
-            if (role === 'user') {
-                const session = sessions.find(s => s.id === actualSessionId);
-                if (!session || session.messages.length === 0) {
-                    supabase.from('chats').update({ title: safeContent.slice(0, 30) }).eq('id', actualSessionId).then();
-                }
-            }
+    if (user && actualSessionId && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(actualSessionId)) {
+        supabase.from('messages').insert([{ id: msgId, chat_id: actualSessionId, user_id: user.id, role, content: safeContent, type, sources: sources ? JSON.stringify(sources) : null }]).then(({ error }) => { if (error) console.error(error); });
+        if (role === 'user') {
+            const session = sessions.find(s => s.id === actualSessionId);
+            if (!session || session.messages.length === 0) supabase.from('chats').update({ title: safeContent.slice(0, 30) }).eq('id', actualSessionId).then();
         }
     }
   }, [activeSessionId, user, sessions, createNewChat]);
 
   const updateMessage = useCallback((sessionId: string, messageId: string, updates: Partial<Message>) => {
-    setSessions(prev => prev.map(s => s.id === sessionId ? {
-      ...s,
-      messages: s.messages.map(m => m.id === messageId ? { ...m, ...updates } : m),
-      updatedAt: new Date()
-    } : s));
-
-    if (user && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId)) {
-        const dbUpdates: any = {};
-        if (updates.content) dbUpdates.content = updates.content;
-        if (updates.type) dbUpdates.type = updates.type;
-        if (updates.feedback) dbUpdates.feedback = updates.feedback;
-        if (updates.sources) dbUpdates.sources = JSON.stringify(updates.sources);
-
-        if (Object.keys(dbUpdates).length > 0) {
-            supabase.from('messages').update(dbUpdates).eq('id', messageId).then();
-        }
-    }
-  }, [user]);
+    setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, messages: s.messages.map(m => m.id === messageId ? { ...m, ...updates } : m), updatedAt: new Date() } : s));
+  }, []);
 
   const deleteSession = useCallback(async (id: string) => {
     setSessions(prev => {
@@ -337,27 +222,24 @@ export const useWAI = () => {
 
   const handleImageGen = async (prompt: string, sessionId: string) => {
     const placeholderId = generateUUID();
-    addMessage('model', 'Creating your masterpiece...', 'loading-image', undefined, sessionId, placeholderId);
+    addMessage('model', 'Generating visualization...', 'loading-image', undefined, sessionId, placeholderId);
     
     setIsProcessing(true);
     const apiKey = getApiKey();
     if (!apiKey) {
-        updateMessage(sessionId, placeholderId, { type: 'text', content: "⚠️ API Key missing. Please check configuration." });
+        updateMessage(sessionId, placeholderId, { type: 'text', content: "⚠️ API Key not found. Please check Netlify configuration." });
         setIsProcessing(false);
         return;
     }
     const ai = new GoogleGenAI({ apiKey });
-    const enhancedPrompt = `${prompt} . Hyper-realistic cinematic shot. 8k resolution, intricate details, photorealistic masterpiece.`;
+    const enhancedPrompt = `${prompt} . High quality, detailed, photorealistic, 8k.`;
 
-    // FALLBACK LOGIC FOR IMAGES: High Quality -> Flash Image -> Error
-    const imageModels = ['gemini-3-pro-image-preview', 'gemini-2.5-flash-image'];
+    // FALLBACK CHAIN: Pro -> Flash -> Imagen
+    const modelsToTry = ['gemini-3-pro-image-preview', 'gemini-2.5-flash-image'];
 
-    for (const model of imageModels) {
+    for (const model of modelsToTry) {
         try {
-            const response = await ai.models.generateContent({
-                model: model, 
-                contents: [{ parts: [{ text: enhancedPrompt }] }]
-            });
+            const response = await ai.models.generateContent({ model, contents: [{ parts: [{ text: enhancedPrompt }] }] });
             const parts = response.candidates?.[0]?.content?.parts;
             if (parts) {
                 for (const part of parts) {
@@ -368,67 +250,44 @@ export const useWAI = () => {
                     }
                 }
             }
-        } catch (err) {
-            console.warn(`Image Model ${model} failed, trying next...`);
-            continue; // Try next model
-        }
+        } catch (e) { console.warn(`${model} failed, failing over...`); }
     }
-
-    // If all fail, try Imagen as last resort fallback or show error
+    
+    // Final Fallback: Imagen
     try {
-        const response = await ai.models.generateImages({
-            model: 'imagen-3.0-generate-001',
-            prompt: enhancedPrompt,
-            config: { numberOfImages: 1, aspectRatio: '1:1', outputMimeType: 'image/jpeg' }
-        });
+        const response = await ai.models.generateImages({ model: 'imagen-3.0-generate-001', prompt: enhancedPrompt, config: { numberOfImages: 1, aspectRatio: '1:1', outputMimeType: 'image/jpeg' } });
         const b64 = response.generatedImages?.[0]?.image?.imageBytes;
         if (b64) {
             updateMessage(sessionId, placeholderId, { type: 'image', content: `data:image/jpeg;base64,${b64}` });
             setIsProcessing(false);
             return;
         }
-    } catch(e: any) {
-        updateMessage(sessionId, placeholderId, { type: 'text', content: formatErrorMessage(e) });
+    } catch (e: any) {
+        updateMessage(sessionId, placeholderId, { type: 'text', content: "Unable to generate image at this time. All models busy." });
     }
     setIsProcessing(false);
   };
 
   const disconnect = useCallback(() => {
-    if (sessionPromiseRef.current) {
-        sessionPromiseRef.current.then(s => s.close()).catch(e => console.warn("Session close error:", e));
-        sessionPromiseRef.current = null;
-    }
-    if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => { try { track.stop(); } catch(e) {} });
-      mediaStreamRef.current = null;
-    }
-    if (inputContextRef.current && inputContextRef.current.state !== 'closed') {
-        inputContextRef.current.close().catch(e => {});
-        inputContextRef.current = null;
-    }
-    if (outputContextRef.current && outputContextRef.current.state !== 'closed') {
-        outputContextRef.current.close().catch(e => {});
-        outputContextRef.current = null;
-    }
-    audioSources.current.forEach(s => { try { s.stop(); } catch(e) {} });
-    audioSources.current.clear();
+    if (sessionPromiseRef.current) { sessionPromiseRef.current.then(s => s.close()).catch(() => {}); sessionPromiseRef.current = null; }
+    if (mediaStreamRef.current) { mediaStreamRef.current.getTracks().forEach(t => t.stop()); mediaStreamRef.current = null; }
+    if (inputContextRef.current) { inputContextRef.current.close(); inputContextRef.current = null; }
+    if (outputContextRef.current) { outputContextRef.current.close(); outputContextRef.current = null; }
+    audioSources.current.forEach(s => { try { s.stop(); } catch(e) {} }); audioSources.current.clear();
     setConnectionState(ConnectionState.DISCONNECTED);
-    setIsSpeaking(false);
-    setIsProcessing(false);
-    setVolumeLevel(0);
+    setIsSpeaking(false); setIsProcessing(false); setVolumeLevel(0);
   }, []);
 
   const connect = useCallback(async () => {
     const apiKey = getApiKey();
     let currentSessionId = activeSessionId;
     if (!currentSessionId) currentSessionId = await createNewChat();
-
     if (!user) return "LOGIN_REQUIRED"; 
     
-    // Strict Check: No Key = No Voice
-    if (!apiKey) { 
-        if (currentSessionId) addMessage('model', "⚠️ API Key Missing. Please check configuration.", 'text', undefined, currentSessionId);
-        return; 
+    // Allow connection attempt even if key check is ambiguous to support "magic" environment injections
+    if (!apiKey) {
+        // Log locally but attempt anyway in case of hidden proxy, but likely will fail inside SDK
+        console.warn("API Key not detected explicitly, attempting connection...");
     }
 
     disconnect(); 
@@ -436,21 +295,11 @@ export const useWAI = () => {
     
     let stream: MediaStream;
     try {
-      if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-         throw new Error("Microphone access is not supported.");
-      }
-      try {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
-      } catch (err) {
-        stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      }
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
       mediaStreamRef.current = stream;
     } catch (e: any) { 
         disconnect();
-        let errorMsg = "Microphone access failed.";
-        const errStr = String(e).toLowerCase();
-        if (errStr.includes('permission denied')) errorMsg = "Browser Permission Denied: Allow Microphone access.";
-        if (currentSessionId) addMessage('model', errorMsg, 'text', undefined, currentSessionId);
+        if (currentSessionId) addMessage('model', "Microphone permission denied.", 'text', undefined, currentSessionId);
         setConnectionState(ConnectionState.DISCONNECTED);
         return; 
     }
@@ -461,19 +310,12 @@ export const useWAI = () => {
         const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
         inputCtx = new AudioContextClass({ sampleRate: 16000 });
         outputCtx = new AudioContextClass({ sampleRate: 24000 });
-        if (inputCtx.state === 'suspended') await inputCtx.resume();
-        if (outputCtx.state === 'suspended') await outputCtx.resume();
         inputContextRef.current = inputCtx;
         outputContextRef.current = outputCtx;
-    } catch (e) {
-        disconnect();
-        if (currentSessionId) addMessage('model', "AudioContext Error.", 'text', undefined, currentSessionId);
-        setConnectionState(ConnectionState.DISCONNECTED);
-        return;
-    }
+    } catch (e) { disconnect(); return; }
 
     try {
-      const ai = new GoogleGenAI({ apiKey });
+      const ai = new GoogleGenAI({ apiKey: apiKey || 'dummy' }); // SDK requires string
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         config: {
@@ -485,40 +327,28 @@ export const useWAI = () => {
         callbacks: {
           onopen: () => {
             setConnectionState(ConnectionState.CONNECTED);
-            try {
-                const source = inputCtx.createMediaStreamSource(stream);
-                const processor = inputCtx.createScriptProcessor(4096, 1, 1);
-                processor.onaudioprocess = (e) => {
-                  if (isSpeakingRef.current) return;
-                  const inputData = e.inputBuffer.getChannelData(0);
-                  if (inputData.length > 0) {
-                     let sum = 0;
-                     for(let i=0; i<inputData.length; i++) sum += inputData[i] * inputData[i];
-                     const rms = Math.sqrt(sum / inputData.length);
-                     setVolumeLevel(isNaN(rms) ? 0 : Math.min(rms * 10, 1)); 
-                  }
-                  sessionPromise.then(s => { 
-                      try { s.sendRealtimeInput({ media: createAudioBlob(inputData) }); } catch (err) { } 
-                  }).catch(() => {});
-                };
-                source.connect(processor);
-                processor.connect(inputCtx.destination);
-            } catch (audioErr) { console.error("Audio Processing Error", audioErr); }
+            const source = inputCtx.createMediaStreamSource(stream);
+            const processor = inputCtx.createScriptProcessor(4096, 1, 1);
+            processor.onaudioprocess = (e) => {
+              if (isSpeakingRef.current) return;
+              const inputData = e.inputBuffer.getChannelData(0);
+              let sum = 0; for(let i=0; i<inputData.length; i++) sum += inputData[i] * inputData[i];
+              setVolumeLevel(Math.min(Math.sqrt(sum / inputData.length) * 10, 1)); 
+              sessionPromise.then(s => s.sendRealtimeInput({ media: createAudioBlob(inputData) })).catch(() => {});
+            };
+            source.connect(processor); processor.connect(inputCtx.destination);
           },
           onmessage: async (msg: LiveServerMessage) => {
             if (msg.serverContent?.interrupted) {
-              audioSources.current.forEach(s => { try { s.stop(); } catch(e) {} });
-              audioSources.current.clear();
-              nextStartTimeRef.current = 0;
-              setIsSpeaking(false);
-              transcriptionRef.current = { user: '', model: '' };
+              audioSources.current.forEach(s => s.stop()); audioSources.current.clear();
+              nextStartTimeRef.current = 0; setIsSpeaking(false); transcriptionRef.current = { user: '', model: '' };
             }
             if (msg.serverContent?.inputTranscription?.text) transcriptionRef.current.user += msg.serverContent.inputTranscription.text;
             if (msg.serverContent?.outputTranscription?.text) transcriptionRef.current.model += msg.serverContent.outputTranscription.text;
             if (msg.serverContent?.turnComplete) {
-              const { user: transcriptUser, model: transcriptModel } = transcriptionRef.current;
-              if (transcriptUser.trim()) addMessage('user', transcriptUser, 'text', undefined, currentSessionId!);
-              if (transcriptModel.trim()) addMessage('model', transcriptModel, 'text', undefined, currentSessionId!);
+              const { user: tUser, model: tModel } = transcriptionRef.current;
+              if (tUser.trim()) addMessage('user', tUser, 'text', undefined, currentSessionId!);
+              if (tModel.trim()) addMessage('model', tModel, 'text', undefined, currentSessionId!);
               transcriptionRef.current = { user: '', model: '' };
             }
             const base64Audio = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
@@ -532,51 +362,31 @@ export const useWAI = () => {
               source.start(start);
               nextStartTimeRef.current = start + audioBuffer.duration;
               audioSources.current.add(source);
-              source.onended = () => {
-                audioSources.current.delete(source);
-                if (audioSources.current.size === 0) setIsSpeaking(false);
-              };
+              source.onended = () => { audioSources.current.delete(source); if (audioSources.current.size === 0) setIsSpeaking(false); };
             }
           },
           onclose: () => { setConnectionState(ConnectionState.DISCONNECTED); setIsSpeaking(false); },
-          onerror: (err: any) => { setConnectionState(ConnectionState.DISCONNECTED); if(currentSessionId) addMessage('model', "Connection lost.", 'text', undefined, currentSessionId); }
+          onerror: (err: any) => { setConnectionState(ConnectionState.DISCONNECTED); }
         }
       });
       sessionPromiseRef.current = sessionPromise;
-      sessionPromise.catch((e: any) => {
-          disconnect();
-          if (currentSessionId) addMessage('model', formatErrorMessage(e), 'text', undefined, currentSessionId);
-      });
-    } catch (e: any) { 
-        disconnect();
-        if (currentSessionId) addMessage('model', formatErrorMessage(e), 'text', undefined, currentSessionId);
-    }
+      sessionPromise.catch((e: any) => { disconnect(); if(currentSessionId) addMessage('model', formatErrorMessage(e), 'text', undefined, currentSessionId); });
+    } catch (e: any) { disconnect(); if(currentSessionId) addMessage('model', formatErrorMessage(e), 'text', undefined, currentSessionId); }
   }, [addMessage, activeSessionId, createNewChat, updateMessage, disconnect, user]);
 
   const sendTextMessage = useCallback(async (text: string, imageData?: { data: string, mimeType: string }) => {
     const apiKey = getApiKey();
-    if (!apiKey) { alert("Please check API Key in configuration."); return; }
+    if (!apiKey) { alert("API Key not found in environment."); return; }
     if (!text.trim() && !imageData) return;
 
     let targetSessionId = activeSessionId;
-    if (!targetSessionId) {
-         targetSessionId = await createNewChat();
-         if (!targetSessionId) return; 
-    }
+    if (!targetSessionId) { targetSessionId = await createNewChat(); if (!targetSessionId) return; }
 
     addMessage('user', text || "Content Analysis", 'text', undefined, targetSessionId);
     
-    const isImageRequest = /(?:create|generate|draw|design|make).*(?:image|picture|logo|art|animation)/i.test(text);
-    if (isImageRequest) {
+    if (/(?:create|generate|draw|design|make).*(?:image|picture|logo|art|animation)/i.test(text)) {
         setIsProcessing(true);
-        try {
-            // Use same fallback logic inside handleImageGen for the tool call
-            await handleImageGen(text, targetSessionId);
-        } catch(e) { 
-            addMessage('model', formatErrorMessage(e), 'text', undefined, targetSessionId); 
-        } finally { 
-            setIsProcessing(false); 
-        }
+        try { await handleImageGen(text, targetSessionId); } catch(e) { addMessage('model', formatErrorMessage(e), 'text', undefined, targetSessionId); } finally { setIsProcessing(false); }
         return;
     }
 
@@ -584,7 +394,7 @@ export const useWAI = () => {
     const streamId = generateUUID();
     addMessage('model', '', 'text', undefined, targetSessionId, streamId);
 
-    // FALLBACK LOGIC FOR TEXT: Gemini 3 Flash -> Gemini 2.5 Flash -> Gemini Flash Lite (1.5 equivalent)
+    // FALLBACK CHAIN: 3.0 Flash -> 2.5 Flash -> Flash Lite
     const models = ['gemini-3-flash-preview', 'gemini-2.5-flash-latest', 'gemini-flash-lite-latest'];
 
     for (const modelName of models) {
@@ -593,49 +403,28 @@ export const useWAI = () => {
             const contents: any[] = [{ role: 'user', parts: [{ text }] }];
             if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
 
-            let config: any = { 
-                systemInstruction: getSystemInstruction(),
-                tools: [{ googleSearch: {} }] 
-            };
-            
-            // Lite models might support different features, but Search is generally available on standard Flash models.
-            // Adjust config for Thinking Mode
-            if (chatMode === 'thinking' && modelName.includes('gemini-3')) {
-                config.tools = []; 
-                config.thinkingConfig = { thinkingBudget: 1024 }; 
-            } else if (chatMode === 'thinking') {
-                 // Downgrade thinking request to normal search for non-3 models
-                 config.tools = [{ googleSearch: {} }];
-            }
+            let config: any = { systemInstruction: getSystemInstruction(), tools: [{ googleSearch: {} }] };
+            if (chatMode === 'thinking' && modelName.includes('gemini-3')) { config.tools = []; config.thinkingConfig = { thinkingBudget: 1024 }; }
 
             const result = await ai.models.generateContentStream({ model: modelName, contents, config });
             let accumulatedText = '';
             let sources: GroundingSource[] = [];
-            let streamIterable: any = result;
             // @ts-ignore
-            if (!result[Symbol.asyncIterator] && result.stream) streamIterable = result.stream;
+            const stream = result.stream || result;
 
-            for await (const chunk of streamIterable) {
-                const textChunk = chunk.text;
-                if (textChunk) {
-                    accumulatedText += textChunk;
-                    updateMessage(targetSessionId, streamId, { content: accumulatedText });
-                }
+            for await (const chunk of stream) {
+                if (chunk.text) { accumulatedText += chunk.text; updateMessage(targetSessionId, streamId, { content: accumulatedText }); }
                 const gChunks = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks;
-                if (gChunks) {
-                    const newSources = gChunks.filter((c: any) => c.web?.uri && c.web?.title).map((c: any) => ({ title: c.web!.title!, uri: c.web!.uri! }));
-                    if (newSources.length > 0) sources = [...sources, ...newSources];
-                }
+                if (gChunks) sources.push(...gChunks.filter((c: any) => c.web?.uri && c.web?.title).map((c: any) => ({ title: c.web.title, uri: c.web.uri })));
             }
             updateMessage(targetSessionId, streamId, { content: accumulatedText, sources: sources.length > 0 ? sources : undefined });
-            return; // Success, exit loop
+            setIsProcessing(false);
+            return; // Success
         } catch(e: any) {
-            console.warn(`Model ${modelName} failed, trying next... Error:`, e);
+            console.warn(`${modelName} failed:`, e);
             if (models.indexOf(modelName) === models.length - 1) {
-                // Last model failed
                 updateMessage(targetSessionId, streamId, { content: formatErrorMessage(e) });
             }
-            // Continue to next model
         }
     }
     setIsProcessing(false);
@@ -644,7 +433,6 @@ export const useWAI = () => {
   return { 
     messages: sessions.find(s => s.id === activeSessionId)?.messages || [], sessions, activeSessionId, setActiveSessionId, createNewChat, resetChat, deleteSession,
     connectionState, isSpeaking, volumeLevel, isProcessing, connect, disconnect, sendTextMessage,
-    chatMode, setChatMode, giveFeedback,
-    user, username, signOut, setManualApiKey
+    chatMode, setChatMode, giveFeedback, user, username, signOut, setManualApiKey
   };
 };
