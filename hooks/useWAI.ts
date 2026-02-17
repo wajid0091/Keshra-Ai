@@ -41,9 +41,26 @@ const imageTool: FunctionDeclaration = {
 };
 
 const formatErrorMessage = (error: any): string => {
-  if (!error) return "Unknown error";
-  if (error instanceof Error) return error.message;
-  return String(error);
+  const msg = error instanceof Error ? error.message : String(error);
+  const lowerMsg = msg.toLowerCase();
+  
+  // Detect Quota/Rate Limit issues and return a clean message
+  if (lowerMsg.includes('429') || lowerMsg.includes('resource_exhausted') || lowerMsg.includes('quota')) {
+      return "⚠️ Daily usage limit reached. Please try again later.";
+  }
+
+  // Detect Safety/Policy blocking
+  if (lowerMsg.includes('safety') || lowerMsg.includes('blocked') || lowerMsg.includes('policy')) {
+      return "⚠️ Request blocked due to safety guidelines.";
+  }
+
+  // Detect Network issues
+  if (lowerMsg.includes('fetch') || lowerMsg.includes('network') || lowerMsg.includes('connection')) {
+      return "⚠️ Network connection error. Please check your internet.";
+  }
+
+  // Fallback for other technical errors (hide raw code)
+  return "⚠️ An unexpected error occurred. Please try again.";
 };
 
 export const useWAI = () => {
@@ -363,7 +380,8 @@ export const useWAI = () => {
         throw new Error("Imagen generation failed.");
       }
     } catch (e: any) {
-      updateMessage(sessionId, placeholderId, { type: 'text', content: `Image Generation Error: ${formatErrorMessage(e)}` });
+      // Use clean formatted error without technical jargon
+      updateMessage(sessionId, placeholderId, { type: 'text', content: formatErrorMessage(e) });
     } finally {
       setIsProcessing(false);
     }
@@ -528,11 +546,11 @@ export const useWAI = () => {
       sessionPromiseRef.current = sessionPromise;
       sessionPromise.catch((e: any) => {
           disconnect();
-          if (currentSessionId) addMessage('model', "Connection Failed. Check API Key.", 'text', undefined, currentSessionId);
+          if (currentSessionId) addMessage('model', formatErrorMessage(e), 'text', undefined, currentSessionId);
       });
     } catch (e: any) { 
         disconnect();
-        if (currentSessionId) addMessage('model', `Connection Error: ${formatErrorMessage(e)}`, 'text', undefined, currentSessionId);
+        if (currentSessionId) addMessage('model', formatErrorMessage(e), 'text', undefined, currentSessionId);
     }
   }, [addMessage, activeSessionId, createNewChat, updateMessage, disconnect, user]);
 
@@ -572,8 +590,12 @@ export const useWAI = () => {
             } else {
                 addMessage('model', response.text || "I couldn't process the image request.", 'text', undefined, targetSessionId);
             }
-        } catch(e) { addMessage('model', `System Error: ${formatErrorMessage(e)}`, 'text', undefined, targetSessionId); }
-        finally { setIsProcessing(false); }
+        } catch(e) { 
+            // Use clean error handling
+            addMessage('model', formatErrorMessage(e), 'text', undefined, targetSessionId); 
+        } finally { 
+            setIsProcessing(false); 
+        }
         return;
     }
 
@@ -613,7 +635,8 @@ export const useWAI = () => {
         }
         updateMessage(targetSessionId, streamId, { content: accumulatedText, sources: sources.length > 0 ? sources : undefined });
     } catch(e: any) {
-        updateMessage(targetSessionId, streamId, { content: `System Error: ${formatErrorMessage(e)}` });
+        // Use clean error handling
+        updateMessage(targetSessionId, streamId, { content: formatErrorMessage(e) });
     } finally {
         setIsProcessing(false);
     }
