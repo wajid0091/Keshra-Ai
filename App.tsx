@@ -8,7 +8,7 @@ import {
   Plus, MessageSquare, Trash2, Menu, X, 
   Settings, Moon, Sun, Copy, Check, Download, Paperclip, Loader2,
   FileText, Lightbulb, BarChart, ExternalLink, Zap, Brain, Globe, ChevronUp,
-  ThumbsUp, ThumbsDown, LogOut, Lock, User, Mail
+  ThumbsUp, ThumbsDown, LogOut, Lock, User, Mail, Key
 } from 'lucide-react';
 
 // --- Dedicated CodeBlock Component ---
@@ -62,6 +62,46 @@ const CodeBlock = memo(({ language, code }: { language: string, code: string }) 
   );
 });
 
+// --- Settings Modal (API Key Fix) ---
+const SettingsModal = ({ onClose, onSave }: { onClose: () => void, onSave: (key: string) => void }) => {
+    const [key, setKey] = useState('');
+    
+    useEffect(() => {
+        const saved = localStorage.getItem('USER_GEMINI_API_KEY');
+        if (saved) setKey(saved);
+    }, []);
+
+    const handleSave = () => {
+        onSave(key);
+        onClose();
+        alert("API Key Updated! The app will now use your custom key.");
+    };
+
+    return (
+        <div className="fixed inset-0 z-[99999] flex items-center justify-center bg-black/90 backdrop-blur-md p-4 animate-in fade-in duration-300">
+             <div className="w-full max-w-sm p-6 rounded-3xl border border-white/10 bg-[#121214] shadow-2xl relative animate-in zoom-in-95 duration-300">
+                <button onClick={onClose} className="absolute top-4 right-4 p-2 rounded-full hover:bg-white/10 text-slate-400 hover:text-white transition-colors"><X className="w-5 h-5" /></button>
+                <h2 className="text-xl font-black text-white mb-2">Settings</h2>
+                <p className="text-xs text-slate-400 mb-6">If you are facing "Limit Reached" or connection errors on Netlify, enter your own API key here.</p>
+                
+                <div className="space-y-4">
+                    <div>
+                        <label className="block text-[10px] font-bold uppercase tracking-widest text-slate-500 mb-1 ml-1">Gemini API Key</label>
+                        <input type="password" value={key} onChange={e => setKey(e.target.value)} 
+                          className="w-full p-3 rounded-xl bg-white/5 border border-white/10 focus:border-cyan-500 outline-none transition-all font-mono text-white text-sm focus:bg-white/10" placeholder="AIzaSy..." />
+                    </div>
+                    <button onClick={handleSave} className="w-full py-3 rounded-xl bg-cyan-600 hover:bg-cyan-500 text-white font-bold transition-all shadow-lg shadow-cyan-900/20">
+                        Save Configuration
+                    </button>
+                    <button onClick={() => { localStorage.removeItem('USER_GEMINI_API_KEY'); setKey(''); alert("Key Cleared"); onClose(); }} className="w-full py-2 text-xs text-red-500 font-bold hover:bg-red-500/10 rounded-lg">
+                        Clear Saved Key
+                    </button>
+                </div>
+             </div>
+        </div>
+    );
+}
+
 // --- Auth Modal ---
 const AuthModal = ({ onClose, defaultMode = 'login' }: { onClose: () => void, defaultMode?: 'login' | 'signup' }) => {
   const [email, setEmail] = useState('');
@@ -86,11 +126,11 @@ const AuthModal = ({ onClose, defaultMode = 'login' }: { onClose: () => void, de
         });
         if (error) throw error;
         alert("Account created! Please check your email to verify, or try logging in.");
-        setIsSignUp(false); // Switch to login view
+        setIsSignUp(false); 
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
         if (error) throw error;
-        onClose(); // Close modal on success
+        onClose(); 
       }
     } catch (err: any) {
       setError(err.message);
@@ -121,7 +161,6 @@ const AuthModal = ({ onClose, defaultMode = 'login' }: { onClose: () => void, de
         </div>
         
         <button onClick={handleGoogleLogin} className="w-full py-3 rounded-xl bg-white text-black font-bold flex items-center justify-center gap-3 mb-5 hover:bg-slate-200 transition-colors">
-            {/* OFFICIAL GOOGLE COLORED ICON */}
             <svg className="w-5 h-5" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                 <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4" />
                 <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853" />
@@ -180,7 +219,7 @@ const App: React.FC = () => {
   const { 
     messages, sessions, activeSessionId, setActiveSessionId, resetChat, deleteSession,
     connectionState, isSpeaking, volumeLevel, isProcessing, connect, disconnect, sendTextMessage,
-    chatMode, setChatMode, giveFeedback, user, username, signOut
+    chatMode, setChatMode, giveFeedback, user, username, signOut, setManualApiKey
   } = useWAI();
 
   const [inputText, setInputText] = useState('');
@@ -189,12 +228,12 @@ const App: React.FC = () => {
   const [theme, setTheme] = useState<'light' | 'dark'>('dark'); 
   const [showModeMenu, setShowModeMenu] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [showSettingsModal, setShowSettingsModal] = useState(false);
   
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    // Force Dark Mode by default
     setTheme('dark');
   }, []);
 
@@ -306,8 +345,9 @@ const App: React.FC = () => {
     <div className={`flex h-full w-full ${textColor} font-sans overflow-hidden transition-colors duration-300 ${theme === 'dark' ? 'dark' : ''}`}>
       
       {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} />}
+      {showSettingsModal && <SettingsModal onClose={() => setShowSettingsModal(false)} onSave={setManualApiKey} />}
 
-      {/* Sidebar - INCREASED Z-INDEX TO 100 TO COVER INPUT BAR */}
+      {/* Sidebar */}
       <aside className={`fixed inset-y-0 left-0 z-[100] shrink-0 h-full ${sidebarBg} ${borderCol} border-r shadow-2xl lg:shadow-none transition-transform duration-300 ${showSidebar ? 'translate-x-0' : '-translate-x-full'} lg:static lg:translate-x-0 lg:flex lg:flex-col`}>
         <div className="flex flex-col h-full p-4 w-full">
           <div className="flex items-center justify-between mb-8 px-2">
@@ -342,6 +382,9 @@ const App: React.FC = () => {
           </div>
 
           <div className={`mt-auto pt-6 border-t ${borderCol} space-y-2`}>
+             <button onClick={() => setShowSettingsModal(true)} className={`flex items-center gap-3 w-full p-3 rounded-xl hover:bg-slate-50 dark:hover:bg-white/5 transition-all text-[13px] font-bold ${textColor}`}>
+               <Key className="w-4 h-4" /> API Settings
+             </button>
              <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className={`flex items-center gap-3 w-full p-3 rounded-xl hover:bg-slate-50 dark:hover:bg-white/5 transition-all text-[13px] font-bold ${textColor}`}>
                {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />} {theme === 'dark' ? 'Light Theme' : 'Dark Theme'}
              </button>
@@ -412,7 +455,6 @@ const App: React.FC = () => {
                     <p className={`${secondaryTextColor} text-sm font-bold mb-4`}>Sign in to save history, use voice mode, and generate images.</p>
                     
                     <button onClick={handleGoogleLogin} className="w-full py-3.5 rounded-xl bg-white text-black font-bold flex items-center justify-center gap-3 hover:bg-slate-200 transition-all shadow-lg hover:shadow-xl hover:scale-[1.02]">
-                        {/* OFFICIAL GOOGLE COLORED ICON */}
                         <svg className="w-5 h-5" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg">
                             <path d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z" fill="#4285F4" />
                             <path d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z" fill="#34A853" />
@@ -550,7 +592,7 @@ const App: React.FC = () => {
           )}
         </div>
 
-        {/* Input Bar - DECREASED Z-INDEX TO 40 TO BE UNDER SIDEBAR */}
+        {/* Input Bar */}
         <div className={`flex-none w-full p-6 ${theme === 'dark' ? 'bg-black border-t border-white/10' : 'bg-white border-t border-slate-100'} z-40`}>
           <div className="max-w-3xl mx-auto">
             {selectedImage && (

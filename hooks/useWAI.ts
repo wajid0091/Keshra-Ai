@@ -4,19 +4,6 @@ import { ConnectionState, Message, GroundingSource, ChatSession, ChatMode } from
 import { createAudioBlob, decode, decodeAudioData } from '../utils/audioUtils';
 import { supabase } from '../lib/supabase';
 
-const getApiKey = (): string => {
-  // @ts-ignore
-  if (import.meta && import.meta.env && import.meta.env.VITE_API_KEY) return import.meta.env.VITE_API_KEY;
-  // @ts-ignore
-  if (import.meta && import.meta.env && import.meta.env.API_KEY) return import.meta.env.API_KEY;
-  if (typeof process !== 'undefined' && process.env) {
-    if (process.env.VITE_API_KEY) return process.env.VITE_API_KEY;
-    if (process.env.API_KEY) return process.env.API_KEY;
-  }
-  if ((window as any).__KESHRA_API_KEY__) return (window as any).__KESHRA_API_KEY__;
-  return "";
-};
-
 // Helper to generate proper UUIDs to prevent DB type errors
 const generateUUID = () => {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) {
@@ -26,6 +13,24 @@ const generateUUID = () => {
         var r = Math.random() * 16 | 0, v = c == 'x' ? r : (r & 0x3 | 0x8);
         return v.toString(16);
     });
+};
+
+const getApiKey = (): string => {
+  // 1. Check Local Storage (User Manual Override) - Highest Priority
+  const localKey = localStorage.getItem('USER_GEMINI_API_KEY');
+  if (localKey && localKey.trim().length > 10) return localKey;
+
+  // 2. Check Vite Env Vars
+  // @ts-ignore
+  if (import.meta && import.meta.env && import.meta.env.VITE_API_KEY) return import.meta.env.VITE_API_KEY;
+  
+  // 3. Check Process Env (Legacy/Build)
+  if (typeof process !== 'undefined' && process.env) {
+    if (process.env.VITE_API_KEY) return process.env.VITE_API_KEY;
+    if (process.env.API_KEY) return process.env.API_KEY;
+  }
+  
+  return "";
 };
 
 const getSystemInstruction = () => `
@@ -59,16 +64,21 @@ const formatErrorMessage = (error: any): string => {
   const msg = error instanceof Error ? error.message : String(error);
   const lowerMsg = msg.toLowerCase();
   
+  // Specific Key Errors
+  if (lowerMsg.includes('api key') || lowerMsg.includes('400') || lowerMsg.includes('invalid')) {
+      return "⚠️ Invalid API Key. Please update it in Settings.";
+  }
+
+  // Quota Errors
   if (lowerMsg.includes('429') || lowerMsg.includes('resource_exhausted') || lowerMsg.includes('quota')) {
-      return "⚠️ Daily usage limit reached. Please try again later.";
+      return "⚠️ API Limit Reached. Please use a new API Key in Settings.";
   }
-  if (lowerMsg.includes('safety') || lowerMsg.includes('blocked') || lowerMsg.includes('policy')) {
-      return "⚠️ Request blocked due to safety guidelines.";
-  }
-  if (lowerMsg.includes('fetch') || lowerMsg.includes('network') || lowerMsg.includes('connection')) {
-      return "⚠️ Network connection error. Please check your internet.";
-  }
-  return "⚠️ Service is currently busy. Please try again.";
+
+  // Safety/Network
+  if (lowerMsg.includes('safety') || lowerMsg.includes('blocked')) return "⚠️ Request blocked due to safety guidelines.";
+  if (lowerMsg.includes('fetch') || lowerMsg.includes('network')) return "⚠️ Network error. Check your internet.";
+  
+  return "⚠️ Service busy. Try again or check Settings.";
 };
 
 export const useWAI = () => {
@@ -115,7 +125,6 @@ export const useWAI = () => {
         setUsername(session.user.email.split('@')[0]);
       }
       
-      // Clear sessions on logout to ensure privacy
       if (!session) {
         setSessions([]);
         setActiveSessionId(null);
@@ -125,11 +134,9 @@ export const useWAI = () => {
     return () => subscription.unsubscribe();
   }, []);
 
-  // --- Load Chats (Only if User is Logged In) ---
+  // --- Load Chats ---
   useEffect(() => {
-    if (!user) {
-        return;
-    }
+    if (!user) return;
 
     const loadData = async () => {
       const { data: chatData, error: chatError } = await supabase
@@ -186,9 +193,18 @@ export const useWAI = () => {
     setActiveSessionId(null);
   }, []);
 
+  // Manual Key Setter
+  const setManualApiKey = (key: string) => {
+      if (key.trim() === "") {
+          localStorage.removeItem('USER_GEMINI_API_KEY');
+      } else {
+          localStorage.setItem('USER_GEMINI_API_KEY', key.trim());
+      }
+      // Force reload to apply key? No, logic uses getApiKey() dynamically.
+  };
+
   const createNewChat = useCallback(async () => {
     const createLocalSession = () => {
-        // Use UUID even for local sessions to prevent DB type errors if they login later
         const newId = generateUUID(); 
         const newSession: ChatSession = { id: newId, title: 'New Conversation', messages: [], updatedAt: new Date() };
         setSessions(prev => [newSession, ...prev]);
@@ -196,12 +212,8 @@ export const useWAI = () => {
         return newId;
     };
 
-    // Guest Mode: Create Local Session
-    if (!user) {
-        return createLocalSession();
-    }
+    if (!user) return createLocalSession();
 
-    // Authenticated Mode: Try DB Insert
     try {
         const { data, error } = await supabase
             .from('chats')
@@ -211,7 +223,6 @@ export const useWAI = () => {
 
         if (error || !data) {
             console.warn("DB Create Failed, falling back to local:", error);
-            // This fallback is crucial for the login bug. If DB fails, we still let them chat.
             return createLocalSession(); 
         }
 
@@ -220,8 +231,7 @@ export const useWAI = () => {
         setActiveSessionId(data.id);
         return data.id;
     } catch (e) {
-        console.error("Create Chat Exception", e);
-        return createLocalSession(); // Fallback
+        return createLocalSession(); 
     }
   }, [user]);
 
@@ -230,7 +240,6 @@ export const useWAI = () => {
     const safeSources = sources ? sources.map(s => ({ title: String(s.title || ''), uri: String(s.uri || '') })) : undefined;
     const msgId = customId || generateUUID();
     
-    // Create optimistic message object
     const newMessage: Message = { 
       id: msgId, 
       role, 
@@ -241,15 +250,12 @@ export const useWAI = () => {
     };
 
     let actualSessionId = targetSessionId || activeSessionId;
-    
-    // If no session, create one locally AND add message immediately
     if (!actualSessionId) {
          const newId = await createNewChat(); 
          if (newId) actualSessionId = newId;
          else return; 
     }
 
-    // Update Local State (Immediate Feedback)
     setSessions(prev => {
       const sessionExists = prev.some(s => s.id === actualSessionId);
       if (!sessionExists) {
@@ -260,7 +266,6 @@ export const useWAI = () => {
                updatedAt: new Date()
            }, ...prev];
       }
-
       return prev.map(s => s.id === actualSessionId ? {
         ...s,
         messages: [...s.messages, newMessage],
@@ -269,11 +274,8 @@ export const useWAI = () => {
       } : s);
     });
 
-    // If User is Logged In -> Save to DB (Fire and Forget)
     if (user && actualSessionId) {
-        // Only attempt DB insert if it's a valid UUID (which it should be now)
         const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(actualSessionId);
-        
         if (isUUID) {
             supabase.from('messages').insert([{
                 id: msgId, 
@@ -286,7 +288,6 @@ export const useWAI = () => {
             }]).then(({ error }) => {
                 if (error) console.error("Supabase Insert Error:", error);
             });
-            
             if (role === 'user') {
                 const session = sessions.find(s => s.id === actualSessionId);
                 if (!session || session.messages.length === 0) {
@@ -295,18 +296,15 @@ export const useWAI = () => {
             }
         }
     }
-
   }, [activeSessionId, user, sessions, createNewChat]);
 
   const updateMessage = useCallback((sessionId: string, messageId: string, updates: Partial<Message>) => {
-    // Optimistic Update
     setSessions(prev => prev.map(s => s.id === sessionId ? {
       ...s,
       messages: s.messages.map(m => m.id === messageId ? { ...m, ...updates } : m),
       updatedAt: new Date()
     } : s));
 
-    // DB Update
     if (user && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId)) {
         const dbUpdates: any = {};
         if (updates.content) dbUpdates.content = updates.content;
@@ -326,10 +324,7 @@ export const useWAI = () => {
       if (activeSessionId === id) setActiveSessionId(filtered.length > 0 ? filtered[0].id : null);
       return filtered;
     });
-
-    if (user) {
-        await supabase.from('chats').delete().eq('id', id);
-    }
+    if (user) await supabase.from('chats').delete().eq('id', id);
   }, [activeSessionId, user]);
 
   const giveFeedback = useCallback((sessionId: string, messageId: string, feedback: 'like' | 'dislike') => {
@@ -343,7 +338,7 @@ export const useWAI = () => {
     setIsProcessing(true);
     const apiKey = getApiKey();
     if (!apiKey) {
-        updateMessage(sessionId, placeholderId, { type: 'text', content: "System Error: API Key is missing." });
+        updateMessage(sessionId, placeholderId, { type: 'text', content: "⚠️ API Key missing. Please set it in Settings." });
         setIsProcessing(false);
         return;
     }
@@ -352,7 +347,6 @@ export const useWAI = () => {
 
     try {
       try {
-        // Try Gemini 2.5 Image first (Fast & Good)
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash-image', 
             contents: [{ parts: [{ text: enhancedPrompt }] }]
@@ -369,7 +363,6 @@ export const useWAI = () => {
         }
         throw new Error("No image data from Gemini 2.5");
       } catch (err) {
-        // Fallback to Imagen 3 (High Quality)
         const response = await ai.models.generateImages({
             model: 'imagen-3.0-generate-001',
             prompt: enhancedPrompt,
@@ -422,7 +415,7 @@ export const useWAI = () => {
 
     if (!user) return "LOGIN_REQUIRED"; 
     if (!apiKey) { 
-        if (currentSessionId) addMessage('model', "System Error: API Key Missing.", 'text', undefined, currentSessionId);
+        if (currentSessionId) addMessage('model', "⚠️ API Key Missing. Please set it in Settings.", 'text', undefined, currentSessionId);
         return; 
     }
 
@@ -444,9 +437,7 @@ export const useWAI = () => {
         disconnect();
         let errorMsg = "Microphone access failed.";
         const errStr = String(e).toLowerCase();
-        if (errStr.includes('permission denied') || errStr.includes('notallowed')) {
-            errorMsg = "Browser Permission Denied: Allow Microphone access.";
-        }
+        if (errStr.includes('permission denied')) errorMsg = "Browser Permission Denied: Allow Microphone access.";
         if (currentSessionId) addMessage('model', errorMsg, 'text', undefined, currentSessionId);
         setConnectionState(ConnectionState.DISCONNECTED);
         return; 
@@ -552,12 +543,10 @@ export const useWAI = () => {
 
   const sendTextMessage = useCallback(async (text: string, imageData?: { data: string, mimeType: string }) => {
     const apiKey = getApiKey();
-    if (!apiKey) { alert("API Key Missing"); return; }
+    if (!apiKey) { alert("Please set API Key in Settings."); return; }
     if (!text.trim() && !imageData) return;
 
     let targetSessionId = activeSessionId;
-    
-    // Ensure Session Exists BEFORE sending message
     if (!targetSessionId) {
          targetSessionId = await createNewChat();
          if (!targetSessionId) return; 
@@ -598,18 +587,14 @@ export const useWAI = () => {
         const contents: any[] = [{ role: 'user', parts: [{ text }] }];
         if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
 
-        // Ensure we always use Google Search for regular chat to provide latest info
-        // and inject dynamic date context via System Instruction
         let config: any = { 
             systemInstruction: getSystemInstruction(),
             tools: [{ googleSearch: {} }] 
         };
         
         let modelName = 'gemini-3-flash-preview';
-        
-        // Mode overrides (Thinking mode disables Search)
         if (chatMode === 'thinking') {
-             config.tools = []; // Clear tools
+             config.tools = []; 
              config.thinkingConfig = { thinkingBudget: 1024 }; 
         }
 
@@ -645,6 +630,6 @@ export const useWAI = () => {
     messages: sessions.find(s => s.id === activeSessionId)?.messages || [], sessions, activeSessionId, setActiveSessionId, createNewChat, resetChat, deleteSession,
     connectionState, isSpeaking, volumeLevel, isProcessing, connect, disconnect, sendTextMessage,
     chatMode, setChatMode, giveFeedback,
-    user, username, signOut
+    user, username, signOut, setManualApiKey
   };
 };
