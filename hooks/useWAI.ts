@@ -16,20 +16,28 @@ const generateUUID = () => {
 };
 
 const getApiKey = (): string => {
-  // 1. Check Local Storage (User Manual Override) - Highest Priority
+  // 1. Check Local Storage (User Manual Override) - Highest Priority (If user manually sets it in Settings)
   const localKey = localStorage.getItem('USER_GEMINI_API_KEY');
   if (localKey && localKey.trim().length > 10) return localKey;
 
-  // 2. Check Vite Env Vars
+  // 2. Check Vite/Client Environment Variables (Preferred for Netlify/Vite)
+  // We explicitly check 'API_KEY' as requested
+  // @ts-ignore
+  if (import.meta && import.meta.env && import.meta.env.API_KEY) return import.meta.env.API_KEY;
   // @ts-ignore
   if (import.meta && import.meta.env && import.meta.env.VITE_API_KEY) return import.meta.env.VITE_API_KEY;
   
-  // 3. Check Process Env (Legacy/Build)
+  // 3. Check Process Environment (Build time injection fallback)
   if (typeof process !== 'undefined' && process.env) {
-    if (process.env.VITE_API_KEY) return process.env.VITE_API_KEY;
     if (process.env.API_KEY) return process.env.API_KEY;
+    if (process.env.VITE_API_KEY) return process.env.VITE_API_KEY;
+    // @ts-ignore
+    if (process.env.REACT_APP_API_KEY) return process.env.REACT_APP_API_KEY;
   }
   
+  // 4. Global Window Fallback (Rare case)
+  if ((window as any).API_KEY) return (window as any).API_KEY;
+
   return "";
 };
 
@@ -200,7 +208,6 @@ export const useWAI = () => {
       } else {
           localStorage.setItem('USER_GEMINI_API_KEY', key.trim());
       }
-      // Force reload to apply key? No, logic uses getApiKey() dynamically.
   };
 
   const createNewChat = useCallback(async () => {
@@ -347,6 +354,7 @@ export const useWAI = () => {
 
     try {
       try {
+        // Primary: Gemini 2.5 Flash Image (Fast & Reliable with simple key)
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash-image', 
             contents: [{ parts: [{ text: enhancedPrompt }] }]
@@ -363,6 +371,7 @@ export const useWAI = () => {
         }
         throw new Error("No image data from Gemini 2.5");
       } catch (err) {
+        // Fallback: Imagen 3 (If available on key)
         const response = await ai.models.generateImages({
             model: 'imagen-3.0-generate-001',
             prompt: enhancedPrompt,
