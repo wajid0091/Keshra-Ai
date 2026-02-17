@@ -2,8 +2,8 @@ import { useState, useRef, useCallback, useEffect } from 'react';
 import { GoogleGenAI, Modality, LiveServerMessage, Type, FunctionDeclaration } from '@google/genai';
 import { ConnectionState, Message, GroundingSource, ChatSession, ChatMode } from '../types';
 import { createAudioBlob, decode, decodeAudioData } from '../utils/audioUtils';
+import { supabase } from '../lib/supabase';
 
-// --- Robust API Key Retrieval ---
 const getApiKey = (): string => {
   // @ts-ignore
   if (import.meta && import.meta.env && import.meta.env.VITE_API_KEY) return import.meta.env.VITE_API_KEY;
@@ -21,18 +21,13 @@ const SYSTEM_INSTRUCTION = `
 You are Keshra AI, a sovereign intelligence developed exclusively by Wajid Ali from Peshawar, Pakistan.
 
 **CORE FUNCTIONS:**
-1. **Chat & Coding:** Provide clear, concise answers. When writing code, use proper markdown code blocks (e.g., \`\`\`python).
+1. **Chat & Coding:** Provide clear, concise answers. When writing code, use proper markdown code blocks.
 2. **Real-time Info:** Use 'googleSearch' for news, weather, sports.
 3. **Image Generation:** IF the user asks to "create", "draw", "generate", "design", or "make" an image or animation, you MUST call the 'generateImage' tool.
 
-**IMPORTANT BEHAVIORAL RULE:**
-- Do **NOT** start every response with "Keshra AI is here to help" or "I am ready to assist".
-- Only introduce yourself if explicitly asked "Who are you?" or "Who made you?".
-- Otherwise, answer the user's question directly and professionally.
-
-**IDENTITY:**
-- Creator: Wajid Ali (Pakistani developer).
-- Voice Greeting (Only if asked): "کیشرا اے آئی آپ کی خدمت میں حاضر ہے۔" (Urdu) or "Keshra AI is here to help you." (English).
+**BEHAVIOR:**
+- Do NOT introduce yourself repeatedly.
+- If asked "Who made you?", reply: "I was created by Wajid Ali from Peshawar, Pakistan."
 `;
 
 const imageTool: FunctionDeclaration = {
@@ -46,34 +41,18 @@ const imageTool: FunctionDeclaration = {
 };
 
 const formatErrorMessage = (error: any): string => {
-  console.error("Raw AI Error:", error);
   if (!error) return "Unknown error";
   if (error instanceof Error) return error.message;
-  if (typeof error === 'string') return error;
-  
-  try {
-    return JSON.stringify(error);
-  } catch (e) {
-    return String(error);
-  }
+  return String(error);
 };
 
 export const useWAI = () => {
-  const [sessions, setSessions] = useState<ChatSession[]>(() => {
-    const saved = localStorage.getItem('keshra_chats_v26_stable');
-    if (!saved) return [];
-    try {
-      return JSON.parse(saved).map((s: any) => ({
-        ...s,
-        messages: s.messages.map((m: any) => ({ ...m, timestamp: new Date(m.timestamp) })),
-        updatedAt: new Date(s.updatedAt)
-      }));
-    } catch { return []; }
-  });
-
-  const [activeSessionId, setActiveSessionId] = useState<string | null>(() => {
-    return localStorage.getItem('keshra_active_id_v26_stable') || null;
-  });
+  const [user, setUser] = useState<any>(null);
+  const [username, setUsername] = useState<string>('');
+  
+  // Data State
+  const [sessions, setSessions] = useState<ChatSession[]>([]);
+  const [activeSessionId, setActiveSessionId] = useState<string | null>(null);
 
   const [connectionState, setConnectionState] = useState<ConnectionState>(ConnectionState.DISCONNECTED);
   const [isSpeaking, setIsSpeaking] = useState(false);
@@ -91,93 +70,248 @@ export const useWAI = () => {
   const transcriptionRef = useRef<{ user: string; model: string }>({ user: '', model: '' });
 
   useEffect(() => { isSpeakingRef.current = isSpeaking; }, [isSpeaking]);
-  
-  // CRITICAL FIX: Robust localStorage saving using WeakSet to handle any circular references
-  useEffect(() => { 
-    try {
-      const seen = new WeakSet();
-      const serialized = JSON.stringify(sessions, (key, value) => {
-        if (typeof value === "object" && value !== null) {
-            // Check for circular reference
-            if (seen.has(value)) return;
-            seen.add(value);
-            
-            // Check for DOM nodes or React Internals
-            if (key.startsWith('_') || value instanceof HTMLElement || (value && value.nativeEvent)) return undefined;
-        }
-        return value;
-      });
-      localStorage.setItem('keshra_chats_v26_stable', serialized); 
-    } catch (e) {
-      console.error("Failed to save chat history (Circular Reference Detected):", e);
-    }
-  }, [sessions]);
-  
-  useEffect(() => { if (activeSessionId) localStorage.setItem('keshra_active_id_v26_stable', activeSessionId); }, [activeSessionId]);
 
-  const createNewChat = useCallback(() => {
-    const newId = Math.random().toString(36).substring(2, 9);
-    const newSession: ChatSession = { id: newId, title: 'New Conversation', messages: [], updatedAt: new Date() };
-    setSessions(prev => [newSession, ...prev]);
-    setActiveSessionId(newId);
-    return newId;
+  // --- Auth Listener ---
+  useEffect(() => {
+    supabase.auth.getSession().then(({ data: { session } }) => {
+      setUser(session?.user ?? null);
+      if (session?.user?.user_metadata?.username) {
+        setUsername(session.user.user_metadata.username);
+      } else if (session?.user?.email) {
+        setUsername(session.user.email.split('@')[0]);
+      }
+    });
+
+    const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
+      setUser(session?.user ?? null);
+      if (session?.user?.user_metadata?.username) {
+        setUsername(session.user.user_metadata.username);
+      } else if (session?.user?.email) {
+        setUsername(session.user.email.split('@')[0]);
+      }
+      
+      // Clear sessions on logout to ensure privacy
+      if (!session) {
+        setSessions([]);
+        setActiveSessionId(null);
+      }
+    });
+
+    return () => subscription.unsubscribe();
   }, []);
 
-  const addMessage = useCallback((role: 'user' | 'model', content: string, type: 'text' | 'image' | 'loading-image' = 'text', sources?: GroundingSource[], targetSessionId?: string, customId?: string) => {
-    // CRITICAL FIX: Ensure content is a primitive string
-    const safeContent = (typeof content === 'string' || typeof content === 'number') ? String(content) : "Content Error";
-    
-    // CRITICAL FIX: Manually map sources to primitive objects to avoid circular references from API responses
-    const safeSources = sources ? sources.map(s => ({ title: String(s.title || ''), uri: String(s.uri || '') })) : undefined;
+  // --- Load Chats (Only if User is Logged In) ---
+  useEffect(() => {
+    if (!user) {
+        return;
+    }
 
+    const loadData = async () => {
+      const { data: chatData, error: chatError } = await supabase
+        .from('chats')
+        .select('*')
+        .eq('user_id', user.id)
+        .order('created_at', { ascending: false });
+
+      if (chatError) {
+          console.error("Error fetching chats:", chatError);
+          return;
+      }
+      
+      const loadedSessions: ChatSession[] = [];
+
+      if (chatData) {
+          for (const chat of chatData) {
+              const { data: msgData } = await supabase
+                  .from('messages')
+                  .select('*')
+                  .eq('chat_id', chat.id)
+                  .order('created_at', { ascending: true });
+              
+              loadedSessions.push({
+                  id: chat.id,
+                  title: chat.title || 'New Conversation',
+                  updatedAt: new Date(chat.updated_at),
+                  messages: (msgData || []).map((m: any) => ({
+                      id: m.id,
+                      role: m.role,
+                      content: m.content,
+                      type: m.type,
+                      timestamp: new Date(m.created_at),
+                      sources: typeof m.sources === 'string' ? JSON.parse(m.sources) : m.sources,
+                      feedback: m.feedback
+                  }))
+              });
+          }
+      }
+      setSessions(loadedSessions);
+      if (loadedSessions.length > 0 && !activeSessionId) {
+          setActiveSessionId(loadedSessions[0].id);
+      }
+    };
+
+    loadData();
+  }, [user]);
+
+  const signOut = useCallback(async () => {
+     await supabase.auth.signOut();
+  }, []);
+
+  // Use this to simply reset the view to the "New Chat" screen without creating a DB entry yet
+  const resetChat = useCallback(() => {
+    setActiveSessionId(null);
+  }, []);
+
+  const createNewChat = useCallback(async () => {
+    const createLocalSession = () => {
+        const newId = Math.random().toString(36).substring(2, 9);
+        const newSession: ChatSession = { id: newId, title: 'New Conversation', messages: [], updatedAt: new Date() };
+        setSessions(prev => [newSession, ...prev]);
+        setActiveSessionId(newId);
+        return newId;
+    };
+
+    // Guest Mode: Create Local Session
+    if (!user) {
+        return createLocalSession();
+    }
+
+    // Authenticated Mode: Try DB Insert
+    try {
+        const { data, error } = await supabase
+            .from('chats')
+            .insert([{ user_id: user.id, title: 'New Conversation' }])
+            .select()
+            .single();
+
+        if (error || !data) {
+            console.warn("DB Create Failed, falling back to local:", error);
+            return createLocalSession(); // Fallback to ensure app keeps working
+        }
+
+        const newSession: ChatSession = { id: data.id, title: data.title, messages: [], updatedAt: new Date(data.created_at) };
+        setSessions(prev => [newSession, ...prev]);
+        setActiveSessionId(data.id);
+        return data.id;
+    } catch (e) {
+        console.error("Create Chat Exception", e);
+        return createLocalSession(); // Fallback
+    }
+  }, [user]);
+
+  const addMessage = useCallback(async (role: 'user' | 'model', content: string, type: 'text' | 'image' | 'loading-image' = 'text', sources?: GroundingSource[], targetSessionId?: string, customId?: string) => {
+    const safeContent = (typeof content === 'string' || typeof content === 'number') ? String(content) : "Content Error";
+    const safeSources = sources ? sources.map(s => ({ title: String(s.title || ''), uri: String(s.uri || '') })) : undefined;
+    const msgId = customId || Math.random().toString(36).substr(2, 9);
+    
+    // Create optimistic message object
     const newMessage: Message = { 
-      id: customId || Math.random().toString(36).substr(2, 9), 
+      id: msgId, 
       role, 
       content: safeContent, 
       type, 
       timestamp: new Date(), 
       sources: safeSources
     };
-    
-    setSessions(prev => {
-      const idToUpdate = targetSessionId || activeSessionId;
-      if (!idToUpdate) return prev;
 
-      return prev.map(s => s.id === idToUpdate ? {
+    let actualSessionId = targetSessionId || activeSessionId;
+    
+    // CRITICAL FIX: If no session, create one locally AND add message immediately
+    if (!actualSessionId) {
+         // This block handles the edge case where addMessage is called without a session ID
+         // It mimics createNewChat logic locally to ensure UI updates
+         const newId = await createNewChat(); 
+         if (newId) actualSessionId = newId;
+         else return; 
+    }
+
+    // Update Local State (Immediate Feedback for both Guest & User)
+    setSessions(prev => {
+      // Check if session exists in state, if not, we might be in a race condition where createNewChat added it but state hasn't refreshed in this closure.
+      // But since we use functional update, 'prev' is fresh.
+      const sessionExists = prev.some(s => s.id === actualSessionId);
+      if (!sessionExists) {
+           // Fallback: If session not found (rare race condition), reconstruct it
+           return [{
+               id: actualSessionId!,
+               title: safeContent.slice(0, 30) || 'New Conversation',
+               messages: [newMessage],
+               updatedAt: new Date()
+           }, ...prev];
+      }
+
+      return prev.map(s => s.id === actualSessionId ? {
         ...s,
         messages: [...s.messages, newMessage],
         updatedAt: new Date(),
         title: s.messages.length === 0 && role === 'user' ? safeContent.slice(0, 30) : s.title
       } : s);
     });
-  }, [activeSessionId]);
 
-  const updateMessage = useCallback((sessionId: string, messageId: string, updates: Partial<Message>) => {
-    // CRITICAL FIX: Whitelist update properties
-    const cleanUpdates: Partial<Message> = {};
-    if (updates.content !== undefined) cleanUpdates.content = String(updates.content);
-    if (updates.type !== undefined) cleanUpdates.type = updates.type;
-    if (updates.feedback !== undefined) cleanUpdates.feedback = updates.feedback;
-    
-    // Safely copy sources if present
-    if (updates.sources !== undefined) {
-        cleanUpdates.sources = updates.sources.map(s => ({ title: String(s.title || ''), uri: String(s.uri || '') }));
+    // If User is Logged In -> Save to DB (Fire and Forget)
+    if (user && actualSessionId) {
+        // If the ID is a local temp ID (not a UUID), this insert might fail if DB expects UUID. 
+        // But we assume the fallback IDs work for local only.
+        // If it's a real DB ID, this works.
+        const isUUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(actualSessionId);
+        
+        if (isUUID) {
+            supabase.from('messages').insert([{
+                id: msgId, // Use the generated ID
+                chat_id: actualSessionId,
+                user_id: user.id,
+                role: role,
+                content: safeContent,
+                type: type,
+                sources: safeSources ? JSON.stringify(safeSources) : null,
+            }]).then(({ error }) => {
+                if (error) console.error("Supabase Insert Error:", error);
+            });
+            
+            if (role === 'user') {
+                const session = sessions.find(s => s.id === actualSessionId);
+                if (!session || session.messages.length === 0) {
+                    supabase.from('chats').update({ title: safeContent.slice(0, 30) }).eq('id', actualSessionId).then();
+                }
+            }
+        }
     }
 
+  }, [activeSessionId, user, sessions, createNewChat]);
+
+  const updateMessage = useCallback((sessionId: string, messageId: string, updates: Partial<Message>) => {
+    // Optimistic Update (Works for both)
     setSessions(prev => prev.map(s => s.id === sessionId ? {
       ...s,
-      messages: s.messages.map(m => m.id === messageId ? { ...m, ...cleanUpdates } : m),
+      messages: s.messages.map(m => m.id === messageId ? { ...m, ...updates } : m),
       updatedAt: new Date()
     } : s));
-  }, []);
 
-  const deleteSession = useCallback((id: string) => {
+    // DB Update (Only if User and valid UUID)
+    if (user && /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(sessionId)) {
+        const dbUpdates: any = {};
+        if (updates.content) dbUpdates.content = updates.content;
+        if (updates.type) dbUpdates.type = updates.type;
+        if (updates.feedback) dbUpdates.feedback = updates.feedback;
+        if (updates.sources) dbUpdates.sources = JSON.stringify(updates.sources);
+
+        if (Object.keys(dbUpdates).length > 0) {
+            supabase.from('messages').update(dbUpdates).eq('id', messageId).then();
+        }
+    }
+  }, [user]);
+
+  const deleteSession = useCallback(async (id: string) => {
     setSessions(prev => {
       const filtered = prev.filter(s => s.id !== id);
       if (activeSessionId === id) setActiveSessionId(filtered.length > 0 ? filtered[0].id : null);
       return filtered;
     });
-  }, [activeSessionId]);
+
+    if (user) {
+        await supabase.from('chats').delete().eq('id', id);
+    }
+  }, [activeSessionId, user]);
 
   const giveFeedback = useCallback((sessionId: string, messageId: string, feedback: 'like' | 'dislike') => {
       updateMessage(sessionId, messageId, { feedback });
@@ -195,12 +329,9 @@ export const useWAI = () => {
         return;
     }
     const ai = new GoogleGenAI({ apiKey });
-
-    // Enhanced prompt engineering: Stronger focus on Realistic Peshawar City, History, and Cinematic Quality
     const enhancedPrompt = `${prompt} . Hyper-realistic cinematic shot of Peshawar City, Pakistan. Featuring the majestic Bala Hissar Fort, historical Qissa Khwani Bazaar, and the Khyber Pass. Golden hour lighting, 8k resolution, intricate architectural details, vibrant culture, dramatic mountains in the background, photorealistic masterpiece, national geographic style.`;
 
     try {
-      // 1. Try Gemini 2.5 Flash Image first
       try {
         const response = await ai.models.generateContent({
             model: 'gemini-2.5-flash-image', 
@@ -218,8 +349,6 @@ export const useWAI = () => {
         }
         throw new Error("No image data from Gemini 2.5");
       } catch (err) {
-        // console.warn("Gemini 2.5 failed, trying Imagen 3...", err);
-        // 2. Fallback to Imagen 3.0
         const response = await ai.models.generateImages({
             model: 'imagen-3.0-generate-001',
             prompt: enhancedPrompt,
@@ -241,21 +370,14 @@ export const useWAI = () => {
   };
 
   const disconnect = useCallback(() => {
-    // Graceful cleanup to prevent black screens/crashes
     if (sessionPromiseRef.current) {
         sessionPromiseRef.current.then(s => s.close()).catch(e => console.warn("Session close error:", e));
         sessionPromiseRef.current = null;
     }
-    
-    // Stop Media Tracks
     if (mediaStreamRef.current) {
-      mediaStreamRef.current.getTracks().forEach(track => {
-          try { track.stop(); } catch(e) {}
-      });
+      mediaStreamRef.current.getTracks().forEach(track => { try { track.stop(); } catch(e) {} });
       mediaStreamRef.current = null;
     }
-
-    // Close Audio Contexts
     if (inputContextRef.current && inputContextRef.current.state !== 'closed') {
         inputContextRef.current.close().catch(e => {});
         inputContextRef.current = null;
@@ -264,10 +386,8 @@ export const useWAI = () => {
         outputContextRef.current.close().catch(e => {});
         outputContextRef.current = null;
     }
-
     audioSources.current.forEach(s => { try { s.stop(); } catch(e) {} });
     audioSources.current.clear();
-
     setConnectionState(ConnectionState.DISCONNECTED);
     setIsSpeaking(false);
     setIsProcessing(false);
@@ -277,91 +397,66 @@ export const useWAI = () => {
   const connect = useCallback(async () => {
     const apiKey = getApiKey();
     let currentSessionId = activeSessionId;
-    if (!currentSessionId) currentSessionId = createNewChat();
+    if (!currentSessionId) currentSessionId = await createNewChat();
+
+    // --- GATEKEEPER: VOICE REQUIRES LOGIN ---
+    if (!user) {
+        // Return explicit error status so UI can show Login Modal
+        return "LOGIN_REQUIRED"; 
+    }
 
     if (!apiKey) { 
-        addMessage('model', "System Error: API Key Missing. Please check configuration.", 'text', undefined, currentSessionId);
+        if (currentSessionId) addMessage('model', "System Error: API Key Missing.", 'text', undefined, currentSessionId);
         return; 
     }
 
-    disconnect(); // Ensure clean slate
-
+    disconnect(); 
     setConnectionState(ConnectionState.CONNECTING);
     
-    // ------------------------------------------------------------------
-    // 1. BROWSER MEDIA PERMISSIONS (Microphone)
-    // ------------------------------------------------------------------
     let stream: MediaStream;
     try {
       if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
          throw new Error("Microphone access is not supported in this browser.");
       }
-
-      // Try optimal constraints first
       try {
-        stream = await navigator.mediaDevices.getUserMedia({ 
-          audio: { 
-              echoCancellation: true, 
-              noiseSuppression: true, 
-              autoGainControl: true
-          } 
-        });
+        stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
       } catch (err) {
-        console.warn("Optimal audio constraints failed, falling back to basic audio.", err);
         stream = await navigator.mediaDevices.getUserMedia({ audio: true });
       }
       mediaStreamRef.current = stream;
-
     } catch (e: any) { 
-        console.error("Browser Media Error:", e);
         disconnect();
-        
         let errorMsg = "Microphone access failed.";
         const errStr = String(e).toLowerCase();
-        const name = e.name || '';
-
-        if (name === 'NotAllowedError' || name === 'PermissionDeniedError' || errStr.includes('permission denied')) {
-            errorMsg = "Browser Permission Denied: Please click the lock icon in your address bar and allow Microphone access.";
-        } else if (name === 'NotFoundError' || errStr.includes('found')) {
-             errorMsg = "Hardware Error: No microphone found. Please connect a microphone.";
-        } else {
-            errorMsg = `Browser Audio Error: ${formatErrorMessage(e)}`;
+        if (errStr.includes('permission denied') || errStr.includes('notallowed')) {
+            errorMsg = "Browser Permission Denied: Allow Microphone access.";
+        } else if (errStr.includes('notfound')) {
+             errorMsg = "No microphone found.";
         }
-
-        addMessage('model', errorMsg, 'text', undefined, currentSessionId!);
+        if (currentSessionId) addMessage('model', errorMsg, 'text', undefined, currentSessionId);
         setConnectionState(ConnectionState.DISCONNECTED);
-        return; // STOP execution if Media fails
+        return; 
     }
 
-    // ------------------------------------------------------------------
-    // 2. AUDIO CONTEXT SETUP (Only proceeds if Media was successful)
-    // ------------------------------------------------------------------
     let inputCtx: AudioContext;
     let outputCtx: AudioContext;
-    
     try {
         const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
         inputCtx = new AudioContextClass({ sampleRate: 16000 });
         outputCtx = new AudioContextClass({ sampleRate: 24000 });
-
         if (inputCtx.state === 'suspended') await inputCtx.resume();
         if (outputCtx.state === 'suspended') await outputCtx.resume();
-
         inputContextRef.current = inputCtx;
         outputContextRef.current = outputCtx;
     } catch (e) {
         disconnect();
-        addMessage('model', "System Error: AudioContext could not be initialized.", 'text', undefined, currentSessionId!);
+        if (currentSessionId) addMessage('model', "AudioContext Error.", 'text', undefined, currentSessionId);
         setConnectionState(ConnectionState.DISCONNECTED);
         return;
     }
 
-    // ------------------------------------------------------------------
-    // 3. API CONNECTION (Gemini Live)
-    // ------------------------------------------------------------------
     try {
       const ai = new GoogleGenAI({ apiKey });
-
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         config: {
@@ -379,23 +474,19 @@ export const useWAI = () => {
                 processor.onaudioprocess = (e) => {
                   if (isSpeakingRef.current) return;
                   const inputData = e.inputBuffer.getChannelData(0);
-                  
                   if (inputData.length > 0) {
                      let sum = 0;
                      for(let i=0; i<inputData.length; i++) sum += inputData[i] * inputData[i];
                      const rms = Math.sqrt(sum / inputData.length);
                      setVolumeLevel(isNaN(rms) ? 0 : Math.min(rms * 10, 1)); 
                   }
-                  
                   sessionPromise.then(s => { 
                       try { s.sendRealtimeInput({ media: createAudioBlob(inputData) }); } catch (err) { } 
                   }).catch(() => {});
                 };
                 source.connect(processor);
                 processor.connect(inputCtx.destination);
-            } catch (audioErr) {
-                console.error("Audio Processing Error", audioErr);
-            }
+            } catch (audioErr) { console.error("Audio Processing Error", audioErr); }
           },
           onmessage: async (msg: LiveServerMessage) => {
             if (msg.serverContent?.interrupted) {
@@ -408,9 +499,9 @@ export const useWAI = () => {
             if (msg.serverContent?.inputTranscription?.text) transcriptionRef.current.user += msg.serverContent.inputTranscription.text;
             if (msg.serverContent?.outputTranscription?.text) transcriptionRef.current.model += msg.serverContent.outputTranscription.text;
             if (msg.serverContent?.turnComplete) {
-              const { user, model } = transcriptionRef.current;
-              if (user.trim()) addMessage('user', user, 'text', undefined, currentSessionId!);
-              if (model.trim()) addMessage('model', model, 'text', undefined, currentSessionId!);
+              const { user: transcriptUser, model: transcriptModel } = transcriptionRef.current;
+              if (transcriptUser.trim()) addMessage('user', transcriptUser, 'text', undefined, currentSessionId!);
+              if (transcriptModel.trim()) addMessage('model', transcriptModel, 'text', undefined, currentSessionId!);
               transcriptionRef.current = { user: '', model: '' };
             }
             const base64Audio = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
@@ -430,58 +521,46 @@ export const useWAI = () => {
               };
             }
           },
-          onclose: () => { 
-              setConnectionState(ConnectionState.DISCONNECTED); 
-              setIsSpeaking(false); 
-          },
-          onerror: (err: any) => { 
-              console.error("Session Error:", err);
-              setConnectionState(ConnectionState.DISCONNECTED);
-              addMessage('model', "Voice Uplink Interrupted: Connection lost.", 'text', undefined, currentSessionId!);
-          }
+          onclose: () => { setConnectionState(ConnectionState.DISCONNECTED); setIsSpeaking(false); },
+          onerror: (err: any) => { setConnectionState(ConnectionState.DISCONNECTED); if(currentSessionId) addMessage('model', "Connection lost.", 'text', undefined, currentSessionId); }
         }
       });
       sessionPromiseRef.current = sessionPromise;
-      
-      // Catch initial connection errors (e.g. 403 Forbidden on Socket Handshake)
       sessionPromise.catch((e: any) => {
-          console.error("API Connect Catch:", e);
           disconnect();
-          const errStr = String(e).toLowerCase();
-          let errorMsg = "System Error: Unable to establish Voice Uplink.";
-          if (errStr.includes('permission') || errStr.includes('403')) {
-             errorMsg = "Access Denied: The API Key is invalid or lacks permission for 'gemini-2.5-flash-native-audio-preview'.";
-          }
-          addMessage('model', errorMsg, 'text', undefined, currentSessionId!);
-          setConnectionState(ConnectionState.DISCONNECTED);
+          if (currentSessionId) addMessage('model', "Connection Failed. Check API Key.", 'text', undefined, currentSessionId);
       });
-
     } catch (e: any) { 
-        console.error("General Connect Exception:", e);
         disconnect();
-        addMessage('model', `System Error: ${formatErrorMessage(e)}`, 'text', undefined, currentSessionId!);
-        setConnectionState(ConnectionState.DISCONNECTED); 
+        if (currentSessionId) addMessage('model', `Connection Error: ${formatErrorMessage(e)}`, 'text', undefined, currentSessionId);
     }
-  }, [addMessage, activeSessionId, createNewChat, updateMessage, disconnect]);
+  }, [addMessage, activeSessionId, createNewChat, updateMessage, disconnect, user]);
 
-  const sendTextMessage = async (text: string, imageData?: { data: string, mimeType: string }) => {
+  const sendTextMessage = useCallback(async (text: string, imageData?: { data: string, mimeType: string }) => {
     const apiKey = getApiKey();
     if (!apiKey) { alert("API Key Missing"); return; }
     if (!text.trim() && !imageData) return;
 
     let targetSessionId = activeSessionId;
-    if (!targetSessionId) targetSessionId = createNewChat();
+    
+    // Ensure Session Exists BEFORE sending message
+    if (!targetSessionId) {
+         // Force creation. createNewChat now guarantees a return (local or DB)
+         targetSessionId = await createNewChat();
+         if (!targetSessionId) return; // Should not happen with new logic
+    }
 
+    // Now we have a valid targetSessionId. 
+    // addMessage handles both local state update and fire-and-forget DB sync
     addMessage('user', text || "Content Analysis", 'text', undefined, targetSessionId);
     
-    // Check for Image Request - Broader regex to catch "Make Animation" as image request intent
-    const isImageRequest = /(?:create|generate|draw|design|make).*(?:image|picture|logo|art|animation)/i.test(text);
+    // From here on, UI is updated. Processing continues in background.
     
+    const isImageRequest = /(?:create|generate|draw|design|make).*(?:image|picture|logo|art|animation)/i.test(text);
     if (isImageRequest) {
         setIsProcessing(true);
         try {
             const ai = new GoogleGenAI({ apiKey });
-            // Using a tool-based approach to confirm intent and get prompt
             const response = await ai.models.generateContent({
                 model: 'gemini-3-flash-preview',
                 contents: [{ role: 'user', parts: [{ text }] }],
@@ -491,7 +570,6 @@ export const useWAI = () => {
             if (fc && fc.name === 'generateImage') {
                 await handleImageGen(fc.args.prompt, targetSessionId);
             } else {
-                // If it didn't call the tool, just display the text response (e.g. "I can't do animations but here is an image...")
                 addMessage('model', response.text || "I couldn't process the image request.", 'text', undefined, targetSessionId);
             }
         } catch(e) { addMessage('model', `System Error: ${formatErrorMessage(e)}`, 'text', undefined, targetSessionId); }
@@ -499,7 +577,6 @@ export const useWAI = () => {
         return;
     }
 
-    // NORMAL TEXT / CHAT REQUEST
     setIsProcessing(true);
     const streamId = Math.random().toString(36).substr(2, 9);
     addMessage('model', '', 'text', undefined, targetSessionId, streamId);
@@ -510,31 +587,16 @@ export const useWAI = () => {
         if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
 
         let config: any = { systemInstruction: SYSTEM_INSTRUCTION };
-        
         let modelName = 'gemini-3-flash-preview';
+        if (chatMode === 'search') config.tools = [{ googleSearch: {} }];
+        else if (chatMode === 'thinking') config.thinkingConfig = { thinkingBudget: 1024 }; 
 
-        if (chatMode === 'search') {
-            config.tools = [{ googleSearch: {} }];
-        } else if (chatMode === 'thinking') {
-             config.thinkingConfig = { thinkingBudget: 1024 }; 
-        }
-
-        const result = await ai.models.generateContentStream({
-            model: modelName,
-            contents,
-            config
-        });
-
+        const result = await ai.models.generateContentStream({ model: modelName, contents, config });
         let accumulatedText = '';
         let sources: GroundingSource[] = [];
-
-        // Hybrid approach to handle potentially different SDK versions (iterable vs .stream property)
         let streamIterable: any = result;
         // @ts-ignore
-        if (!result[Symbol.asyncIterator] && result.stream) {
-            // @ts-ignore
-            streamIterable = result.stream;
-        }
+        if (!result[Symbol.asyncIterator] && result.stream) streamIterable = result.stream;
 
         for await (const chunk of streamIterable) {
             const textChunk = chunk.text;
@@ -547,21 +609,20 @@ export const useWAI = () => {
                 const newSources = gChunks.filter((c: any) => c.web?.uri && c.web?.title).map((c: any) => ({ title: c.web!.title!, uri: c.web!.uri! }));
                 if (newSources.length > 0) sources = [...sources, ...newSources];
             }
+            
         }
-        
         updateMessage(targetSessionId, streamId, { content: accumulatedText, sources: sources.length > 0 ? sources : undefined });
-
     } catch(e: any) {
         updateMessage(targetSessionId, streamId, { content: `System Error: ${formatErrorMessage(e)}` });
     } finally {
         setIsProcessing(false);
     }
-  };
+  }, [user, activeSessionId, createNewChat, addMessage, updateMessage, chatMode]); 
 
   return { 
-    messages: sessions.find(s => s.id === activeSessionId)?.messages || [], sessions, activeSessionId, setActiveSessionId, createNewChat, deleteSession,
+    messages: sessions.find(s => s.id === activeSessionId)?.messages || [], sessions, activeSessionId, setActiveSessionId, createNewChat, resetChat, deleteSession,
     connectionState, isSpeaking, volumeLevel, isProcessing, connect, disconnect, sendTextMessage,
-    chatMode, setChatMode,
-    giveFeedback // Export feedback function
+    chatMode, setChatMode, giveFeedback,
+    user, username, signOut
   };
 };
