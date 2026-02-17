@@ -15,27 +15,34 @@ const generateUUID = () => {
     });
 };
 
+// --- ROBUST API KEY LOADING ---
 const getApiKey = (): string => {
-  // 1. Check Local Storage (User Manual Override) - Highest Priority (If user manually sets it in Settings)
+  // 1. Check Local Storage (Manual Override via Settings)
   const localKey = localStorage.getItem('USER_GEMINI_API_KEY');
   if (localKey && localKey.trim().length > 10) return localKey;
 
-  // 2. Check Vite/Client Environment Variables (Preferred for Netlify/Vite)
-  // We explicitly check 'API_KEY' as requested
-  // @ts-ignore
-  if (import.meta && import.meta.env && import.meta.env.API_KEY) return import.meta.env.API_KEY;
-  // @ts-ignore
-  if (import.meta && import.meta.env && import.meta.env.VITE_API_KEY) return import.meta.env.VITE_API_KEY;
-  
-  // 3. Check Process Environment (Build time injection fallback)
+  // 2. Check process.env (Standard Node/Netlify/Build Env)
+  // We explicitly look for 'API_KEY' as requested
   if (typeof process !== 'undefined' && process.env) {
     if (process.env.API_KEY) return process.env.API_KEY;
+    // Fallbacks just in case
     if (process.env.VITE_API_KEY) return process.env.VITE_API_KEY;
     // @ts-ignore
     if (process.env.REACT_APP_API_KEY) return process.env.REACT_APP_API_KEY;
   }
+
+  // 3. Check import.meta.env (Vite Client Env)
+  // @ts-ignore
+  if (typeof import.meta !== 'undefined' && import.meta.env) {
+    // @ts-ignore
+    if (import.meta.env.API_KEY) return import.meta.env.API_KEY; // Direct access
+    // @ts-ignore
+    if (import.meta.env['API_KEY']) return import.meta.env['API_KEY']; // Bracket access
+    // @ts-ignore
+    if (import.meta.env.VITE_API_KEY) return import.meta.env.VITE_API_KEY;
+  }
   
-  // 4. Global Window Fallback (Rare case)
+  // 4. Global Window Fallback (Last resort)
   if ((window as any).API_KEY) return (window as any).API_KEY;
 
   return "";
@@ -73,8 +80,8 @@ const formatErrorMessage = (error: any): string => {
   const lowerMsg = msg.toLowerCase();
   
   // Specific Key Errors
-  if (lowerMsg.includes('api key') || lowerMsg.includes('400') || lowerMsg.includes('invalid')) {
-      return "⚠️ Invalid API Key. Please update it in Settings.";
+  if (lowerMsg.includes('api key') || lowerMsg.includes('400') || lowerMsg.includes('invalid') || lowerMsg.includes('unauthenticated')) {
+      return "⚠️ Invalid API Key. Please check your settings or environment variables.";
   }
 
   // Quota Errors
@@ -423,6 +430,8 @@ export const useWAI = () => {
     if (!currentSessionId) currentSessionId = await createNewChat();
 
     if (!user) return "LOGIN_REQUIRED"; 
+    
+    // Strict Check: No Key = No Voice
     if (!apiKey) { 
         if (currentSessionId) addMessage('model', "⚠️ API Key Missing. Please set it in Settings.", 'text', undefined, currentSessionId);
         return; 
