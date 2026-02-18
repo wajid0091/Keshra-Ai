@@ -8,7 +8,7 @@ import {
   Plus, MessageSquare, Trash2, Menu, X, 
   Moon, Sun, Copy, Check, Download, Paperclip, Loader2,
   FileText, Lightbulb, BarChart, ExternalLink, Globe, ChevronUp,
-  ThumbsUp, ThumbsDown, LogOut, Lock, Mail, Heart, CreditCard, Coins, Brain
+  ThumbsUp, ThumbsDown, LogOut, Lock, Mail, Heart, CreditCard, Coins, Brain, Square
 } from 'lucide-react';
 
 // --- Dedicated CodeBlock Component ---
@@ -242,7 +242,7 @@ const AuthModal = ({ onClose, defaultMode = 'login' }: { onClose: () => void, de
 const App: React.FC = () => {
   const { 
     messages, sessions, activeSessionId, setActiveSessionId, resetChat, deleteSession,
-    connectionState, isSpeaking, volumeLevel, isProcessing, connect, disconnect, sendTextMessage,
+    connectionState, isSpeaking, volumeLevel, isProcessing, connect, disconnect, sendTextMessage, stopGeneration,
     chatMode, setChatMode, giveFeedback, user, username, signOut
   } = useWAI();
 
@@ -268,6 +268,10 @@ const App: React.FC = () => {
   }, [messages, isProcessing, connectionState]);
 
   const handleSend = (overrideText?: string) => {
+    if (isProcessing) {
+        stopGeneration();
+        return;
+    }
     const validOverride = (typeof overrideText === 'string') ? overrideText : '';
     const textToSend = validOverride || inputText;
     
@@ -665,9 +669,9 @@ const App: React.FC = () => {
                           className={`p-3 rounded-full transition-all ${connectionState === ConnectionState.CONNECTED ? 'bg-cyan-600 text-white animate-pulse' : 'text-slate-400 hover:bg-slate-100 dark:hover:bg-white/5'}`}>
                     {connectionState === ConnectionState.CONNECTED ? <Mic className="w-6 h-6" /> : <Mic className="w-6 h-6" />}
                   </button>
-                  <button onClick={() => handleSend()} disabled={(!inputText.trim() && !selectedImage) || isProcessing} 
-                          className={`p-3 rounded-full transition-all ${inputText.trim() || selectedImage ? 'bg-cyan-600 text-white scale-105 shadow-xl shadow-cyan-600/20' : 'text-slate-300 dark:text-slate-700'}`}>
-                    <Send className="w-6 h-6" />
+                  <button onClick={() => handleSend()} disabled={((!inputText.trim() && !selectedImage) && !isProcessing)} 
+                          className={`p-3 rounded-full transition-all ${isProcessing ? 'bg-red-500 text-white animate-pulse' : (inputText.trim() || selectedImage ? 'bg-cyan-600 text-white scale-105 shadow-xl shadow-cyan-600/20' : 'text-slate-300 dark:text-slate-700')}`}>
+                    {isProcessing ? <Square className="w-5 h-5 fill-current" /> : <Send className="w-6 h-6" />}
                   </button>
                 </div>
               </div>

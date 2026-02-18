@@ -17,19 +17,33 @@ const generateUUID = () => {
 
 // --- API KEY STRATEGY ---
 const getOpenRouterKey = (): string | null => {
+  // Try import.meta.env (Vite standard)
   // @ts-ignore
   if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_OPENROUTER_API_KEY) {
       // @ts-ignore
       return import.meta.env.VITE_OPENROUTER_API_KEY;
   }
+  // Try process.env (Fallback)
+  // @ts-ignore
+  if (typeof process !== 'undefined' && process.env && process.env.VITE_OPENROUTER_API_KEY) {
+      // @ts-ignore
+      return process.env.VITE_OPENROUTER_API_KEY;
+  }
   return null;
 };
 
 const getGeminiKey = (): string | null => {
+  // Try import.meta.env (Vite standard)
   // @ts-ignore
   if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_GEMINI_API_KEY) {
       // @ts-ignore
       return import.meta.env.VITE_GEMINI_API_KEY;
+  }
+  // Try process.env (Fallback)
+  // @ts-ignore
+  if (typeof process !== 'undefined' && process.env && process.env.VITE_GEMINI_API_KEY) {
+      // @ts-ignore
+      return process.env.VITE_GEMINI_API_KEY;
   }
   return null;
 };
@@ -41,21 +55,24 @@ Current Time: ${new Date().toLocaleString()}.
 **IDENTITY & RULES:**
 1. **Name:** Keshra AI.
 2. **Creator:** Wajid Ali (Peshawar).
-3. **Model Integrity:** You must NEVER mention you are GLM, Llama, Qwen, or Google. You are Keshra AI.
+3. **Model Integrity:** You must NEVER mention you are Llama, Meta, Qwen, or Google. You are Keshra AI.
 4. **Behavior:** Be helpful, intelligent, and respectful.
-5. **Language Priority:** 
-   - **Urdu:** If the user speaks/types Urdu, MUST reply in high-quality Urdu.
+5. **Language Priority (CRITICAL):** 
+   - **Urdu:** If the user speaks/types Urdu, you MUST reply in pure, high-quality Urdu (No Hinglish).
    - **Pashto:** If the user speaks/types Pashto, MUST reply in Pashto.
    - **English:** If the user speaks/types English, reply in English.
 6. **Voice Interaction:** When speaking, keep responses concise and natural (conversational style).
 7. **Donation:** If the user is appreciative, gently mention you are a free tool supported by the community and they can use the "Support Keshra" button.
 `;
 
-// Priority List of Models (GLM 4.5 Air prioritized for Urdu as requested)
+// Priority List of Models
+// 1. Llama 3.3 70B: Very fast, excellent Urdu, highly intelligent.
+// 2. Qwen 3: Backup for multilingual.
+// 3. GLM 4.5 Air: Fallback.
 const MODELS = [
-  "z-ai/glm-4.5-air:free",               // #1 Priority: Best for Urdu
-  "qwen/qwen3-next-80b-a3b-instruct:free", // #2 Backup: Excellent multilingual
   "meta-llama/llama-3.3-70b-instruct:free",
+  "qwen/qwen3-next-80b-a3b-instruct:free", 
+  "z-ai/glm-4.5-air:free",
   "nvidia/nemotron-3-nano-30b-a3b:free"
 ];
 
@@ -72,6 +89,9 @@ export const useWAI = () => {
   const [volumeLevel, setVolumeLevel] = useState(0);
   const [chatMode, setChatMode] = useState<ChatMode>('normal');
 
+  // Refs
+  const abortControllerRef = useRef<AbortController | null>(null);
+  
   // Voice (Gemini Live) Refs
   const isSpeakingRef = useRef(false);
   const sessionPromiseRef = useRef<Promise<any> | null>(null);
@@ -197,6 +217,15 @@ export const useWAI = () => {
       updateMessage(sessionId, messageId, { feedback });
   }, [updateMessage]);
 
+  // --- STOP GENERATION ---
+  const stopGeneration = useCallback(() => {
+    if (abortControllerRef.current) {
+        abortControllerRef.current.abort();
+        abortControllerRef.current = null;
+        setIsProcessing(false);
+    }
+  }, []);
+
   // --- IMAGE GENERATION LOGIC (POLLINATIONS) ---
   const handleImageGen = async (prompt: string, sessionId: string) => {
     const placeholderId = generateUUID();
@@ -233,7 +262,7 @@ export const useWAI = () => {
   const connect = useCallback(async () => {
     const geminiKey = getGeminiKey();
     if (!geminiKey) {
-        alert("Configuration Error: VITE_GEMINI_API_KEY is missing. Please add it to your environment variables for Voice Mode.");
+        alert("Configuration Error: VITE_GEMINI_API_KEY is missing. Please check your environment variables.");
         return;
     }
     
@@ -241,7 +270,6 @@ export const useWAI = () => {
     if (!currentSessionId) currentSessionId = await createNewChat();
     if (!user) return "LOGIN_REQUIRED"; 
     
-    // Stop any existing session properly before starting a new one
     disconnect(); 
     setConnectionState(ConnectionState.CONNECTING);
     
@@ -278,18 +306,16 @@ export const useWAI = () => {
         callbacks: {
           onopen: () => {
             setConnectionState(ConnectionState.CONNECTED);
-            // Resume output context to prevent auto-block
             outputCtx.resume().catch(() => {});
             
             const source = inputCtx.createMediaStreamSource(stream);
             const processor = inputCtx.createScriptProcessor(4096, 1, 1);
             processor.onaudioprocess = (e) => {
-              if (isSpeakingRef.current) return; // Don't send input while AI is speaking
+              if (isSpeakingRef.current) return;
               const inputData = e.inputBuffer.getChannelData(0);
               let sum = 0; for(let i=0; i<inputData.length; i++) sum += inputData[i] * inputData[i];
               setVolumeLevel(Math.min(Math.sqrt(sum / inputData.length) * 10, 1)); 
               
-              // Only send if connection is valid
               sessionPromise.then(s => s.sendRealtimeInput({ media: createAudioBlob(inputData) })).catch(() => {});
             };
             source.connect(processor); processor.connect(inputCtx.destination);
@@ -320,7 +346,6 @@ export const useWAI = () => {
             }
           },
           onclose: () => { 
-              console.log("Gemini Connection Closed");
               setConnectionState(ConnectionState.DISCONNECTED); 
               setIsSpeaking(false); 
           },
@@ -331,14 +356,11 @@ export const useWAI = () => {
         }
       });
       sessionPromiseRef.current = sessionPromise;
-      sessionPromise.catch((e: any) => { 
-          console.error("Session Connection Failed:", e);
-          disconnect(); 
-      });
+      sessionPromise.catch((e: any) => { disconnect(); });
     } catch (e: any) { disconnect(); }
   }, [activeSessionId, createNewChat, disconnect, user]);
 
-  // --- OPENROUTER CHAT LOGIC (MULTI-MODEL FALLBACK) ---
+  // --- OPENROUTER CHAT LOGIC ---
   const sendTextMessage = useCallback(async (text: string, imageData?: { data: string, mimeType: string }) => {
     const apiKey = getOpenRouterKey();
     let targetSessionId = activeSessionId;
@@ -354,7 +376,7 @@ export const useWAI = () => {
     addMessage('user', text || "Image Analysis", 'text', undefined, targetSessionId);
     
     // Intelligent Image Intent Detection
-    if (/(?:create|generate|draw|design|make|render).*(?:image|picture|logo|art|animation|photo)/i.test(text)) {
+    if (/(?:create|generate|draw|design|make|render|imagine).*(?:image|picture|logo|art|animation|photo)/i.test(text)) {
         handleImageGen(text, targetSessionId);
         return;
     }
@@ -362,6 +384,10 @@ export const useWAI = () => {
     setIsProcessing(true);
     const streamId = generateUUID();
     addMessage('model', '', 'text', undefined, targetSessionId, streamId);
+
+    // Setup AbortController
+    const abortController = new AbortController();
+    abortControllerRef.current = abortController;
 
     try {
         const currentSession = sessions.find(s => s.id === targetSessionId);
@@ -380,6 +406,9 @@ export const useWAI = () => {
         let reply = "";
 
         for (const model of MODELS) {
+            // Check if aborted before trying next model
+            if (abortController.signal.aborted) break;
+
             try {
                 console.log(`Trying model: ${model}`);
                 const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
@@ -394,8 +423,9 @@ export const useWAI = () => {
                         model: model,
                         messages: history,
                         temperature: 0.7,
-                        max_tokens: 1500, // Increased for longer Urdu responses
-                    })
+                        max_tokens: 2000, 
+                    }),
+                    signal: abortController.signal
                 });
 
                 if (response.ok) {
@@ -406,10 +436,13 @@ export const useWAI = () => {
                         break; 
                     }
                 }
-            } catch (err) {
+            } catch (err: any) {
+                if (err.name === 'AbortError') throw err;
                 console.warn(`Model ${model} failed`, err);
             }
         }
+
+        if (abortController.signal.aborted) return;
 
         if (!success || !reply) {
             throw new Error("All models failed to respond.");
@@ -419,16 +452,19 @@ export const useWAI = () => {
         persistMessageUpdate(streamId, { content: reply });
 
     } catch(e: any) {
-        updateMessage(targetSessionId, streamId, { content: "⚠️ System Busy: Please try again in a moment." });
+        if (e.name !== 'AbortError') {
+             updateMessage(targetSessionId, streamId, { content: "⚠️ System Busy or Offline: Please check your connection." });
+        }
     } finally {
         setIsProcessing(false);
+        abortControllerRef.current = null;
     }
 
   }, [user, activeSessionId, createNewChat, addMessage, updateMessage, sessions, persistMessageUpdate, connectionState]); 
 
   return { 
     messages: sessions.find(s => s.id === activeSessionId)?.messages || [], sessions, activeSessionId, setActiveSessionId, createNewChat, resetChat, deleteSession,
-    connectionState, isSpeaking, volumeLevel, isProcessing, connect, disconnect, sendTextMessage,
+    connectionState, isSpeaking, volumeLevel, isProcessing, connect, disconnect, sendTextMessage, stopGeneration,
     chatMode, setChatMode, giveFeedback, user, username, signOut, setManualApiKey
   };
 };
