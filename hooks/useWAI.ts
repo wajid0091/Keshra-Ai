@@ -32,7 +32,7 @@ const getApiKey = (): string => {
   }
 
   // 3. HARDCODED FALLBACK (DIRECT INJECTION)
-  return "AIzaSyC9_U9xYYir9iJleWdvnWnM_nD2j8oTc2Q";
+  return "";
 };
 
 const getSystemInstruction = () => `
