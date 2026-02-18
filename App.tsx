@@ -8,7 +8,7 @@ import {
   Plus, MessageSquare, Trash2, Menu, X, 
   Moon, Sun, Copy, Check, Download, Paperclip, Loader2,
   FileText, Lightbulb, BarChart, ExternalLink, Zap, Brain, Globe, ChevronUp,
-  ThumbsUp, ThumbsDown, LogOut, Lock, User, Mail
+  ThumbsUp, ThumbsDown, LogOut, Lock, User, Mail, Heart, CreditCard, Coins
 } from 'lucide-react';
 
 // --- Dedicated CodeBlock Component ---
@@ -62,6 +62,74 @@ const CodeBlock = memo(({ language, code }: { language: string, code: string }) 
   );
 });
 
+// --- Donation Modal ---
+const DonationModal = ({ onClose }: { onClose: () => void }) => {
+  const [copiedEp, setCopiedEp] = useState(false);
+  const [copiedSp, setCopiedSp] = useState(false);
+
+  const copyToClipboard = (text: string, type: 'ep' | 'sp') => {
+    navigator.clipboard.writeText(text);
+    if (type === 'ep') { setCopiedEp(true); setTimeout(() => setCopiedEp(false), 2000); }
+    if (type === 'sp') { setCopiedSp(true); setTimeout(() => setCopiedSp(false), 2000); }
+  };
+
+  return (
+    <div className="fixed inset-0 z-[100000] flex items-center justify-center bg-black/90 backdrop-blur-md p-4 animate-in fade-in duration-300">
+      <div className="w-full max-w-md p-6 rounded-3xl border border-white/10 bg-[#121214] shadow-2xl relative animate-in zoom-in-95 duration-300">
+        <button onClick={onClose} className="absolute top-4 right-4 p-2 rounded-full hover:bg-white/10 text-slate-400 hover:text-white transition-colors"><X className="w-5 h-5" /></button>
+        
+        <div className="text-center mb-6">
+           <div className="w-16 h-16 bg-gradient-to-br from-pink-600 to-rose-600 rounded-2xl flex items-center justify-center shadow-lg shadow-pink-600/20 mx-auto mb-4 animate-pulse">
+             <Heart className="w-8 h-8 text-white fill-white" />
+           </div>
+           <h2 className="text-2xl font-black tracking-tight text-white">Support Keshra AI</h2>
+           <p className="text-slate-400 text-sm font-medium mt-2">Help Wajid Ali keep this Pakistani AI free and powerful.</p>
+        </div>
+
+        <div className="space-y-4">
+          {/* Easypaisa */}
+          <div className="p-4 rounded-xl bg-[#1e1e1e] border border-white/10 hover:border-green-500/50 transition-colors group">
+             <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-full bg-green-500/20 flex items-center justify-center">
+                        <Coins className="w-4 h-4 text-green-500" />
+                    </div>
+                    <span className="text-sm font-bold text-white">Easypaisa</span>
+                </div>
+                <button onClick={() => copyToClipboard('03139071038', 'ep')} className="p-2 hover:bg-white/10 rounded-lg transition-colors">
+                    {copiedEp ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4 text-slate-400 group-hover:text-white" />}
+                </button>
+             </div>
+             <div className="bg-black/30 p-3 rounded-lg font-mono text-lg text-center tracking-wider text-green-400 font-bold border border-white/5">
+                0313 9071038
+             </div>
+          </div>
+
+          {/* SadaPay */}
+          <div className="p-4 rounded-xl bg-[#1e1e1e] border border-white/10 hover:border-teal-500/50 transition-colors group">
+             <div className="flex items-center justify-between mb-2">
+                <div className="flex items-center gap-2">
+                    <div className="w-8 h-8 rounded-full bg-teal-500/20 flex items-center justify-center">
+                        <CreditCard className="w-4 h-4 text-teal-500" />
+                    </div>
+                    <span className="text-sm font-bold text-white">Bank SadaPay</span>
+                </div>
+                <button onClick={() => copyToClipboard('PK87SADA0000003139071038', 'sp')} className="p-2 hover:bg-white/10 rounded-lg transition-colors">
+                    {copiedSp ? <Check className="w-4 h-4 text-green-500" /> : <Copy className="w-4 h-4 text-slate-400 group-hover:text-white" />}
+                </button>
+             </div>
+             <div className="bg-black/30 p-3 rounded-lg font-mono text-[11px] sm:text-sm text-center tracking-wider text-teal-400 font-bold border border-white/5 break-all">
+                PK87SADA0000003139071038
+             </div>
+          </div>
+        </div>
+
+        <p className="text-center text-[10px] text-slate-500 mt-6 uppercase tracking-widest font-bold">Secure • Trusted • Pakistani</p>
+      </div>
+    </div>
+  );
+}
+
 // --- Auth Modal ---
 const AuthModal = ({ onClose, defaultMode = 'login' }: { onClose: () => void, defaultMode?: 'login' | 'signup' }) => {
   const [email, setEmail] = useState('');
@@ -85,7 +153,7 @@ const AuthModal = ({ onClose, defaultMode = 'login' }: { onClose: () => void, de
             }
         });
         if (error) throw error;
-        alert("Account created! Please check your email to verify, or try logging in.");
+        alert("Account created! Please check your email to verify.");
         setIsSignUp(false); 
       } else {
         const { error } = await supabase.auth.signInWithPassword({ email, password });
@@ -188,6 +256,7 @@ const App: React.FC = () => {
   const [theme, setTheme] = useState<'light' | 'dark'>('dark'); 
   const [showModeMenu, setShowModeMenu] = useState(false);
   const [showAuthModal, setShowAuthModal] = useState(false);
+  const [showDonationModal, setShowDonationModal] = useState(false);
   
   const chatEndRef = useRef<HTMLDivElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
@@ -304,6 +373,7 @@ const App: React.FC = () => {
     <div className={`flex h-full w-full ${textColor} font-sans overflow-hidden transition-colors duration-300 ${theme === 'dark' ? 'dark' : ''}`}>
       
       {showAuthModal && <AuthModal onClose={() => setShowAuthModal(false)} />}
+      {showDonationModal && <DonationModal onClose={() => setShowDonationModal(false)} />}
 
       {/* Sidebar */}
       <aside className={`fixed inset-y-0 left-0 z-[100] shrink-0 h-full ${sidebarBg} ${borderCol} border-r shadow-2xl lg:shadow-none transition-transform duration-300 ${showSidebar ? 'translate-x-0' : '-translate-x-full'} lg:static lg:translate-x-0 lg:flex lg:flex-col`}>
@@ -340,6 +410,10 @@ const App: React.FC = () => {
           </div>
 
           <div className={`mt-auto pt-6 border-t ${borderCol} space-y-2`}>
+             <button onClick={() => setShowDonationModal(true)} className="flex items-center gap-3 w-full p-3 rounded-xl bg-gradient-to-r from-pink-600 to-rose-600 hover:from-pink-500 hover:to-rose-500 text-white transition-all text-[13px] font-bold shadow-lg shadow-pink-900/30">
+               <Heart className="w-4 h-4 fill-white animate-pulse" /> Support Keshra
+             </button>
+
              <button onClick={() => setTheme(theme === 'dark' ? 'light' : 'dark')} className={`flex items-center gap-3 w-full p-3 rounded-xl hover:bg-slate-50 dark:hover:bg-white/5 transition-all text-[13px] font-bold ${textColor}`}>
                {theme === 'dark' ? <Sun className="w-4 h-4" /> : <Moon className="w-4 h-4" />} {theme === 'dark' ? 'Light Theme' : 'Dark Theme'}
              </button>

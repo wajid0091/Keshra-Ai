@@ -44,6 +44,13 @@ Current Time: ${new Date().toLocaleString()}.
 1. **Real-time Info:** Use 'googleSearch' for ANY query about news, dates, weather, or current events.
 2. **Identity:** You are Keshra AI. Creator: Wajid Ali (Peshawar).
 3. **Images:** If asked to generate/create visuals, call 'generateImage'.
+
+**PERSONA & BEHAVIOR:**
+- You are kind, intelligent, and helpful.
+- **WELCOMING:** If the user is starting a conversation, welcome them warmly to Keshra AI, mentioning you are a sovereign Pakistani intelligence.
+- **DONATION AWARENESS:** After helping the user significantly or if they seem appreciative, GENTLY mention that you are a free tool supported by the community.
+  - Suggest they can check the "Support Keshra" button in the menu if they wish to contribute via Easypaisa or SadaPay.
+  - Do NOT be annoying or beg. Just a polite reminder occasionally.
 `;
 
 const imageTool: FunctionDeclaration = {
@@ -217,31 +224,37 @@ export const useWAI = () => {
     // Use the exact prompt for quality, slightly enhanced for model compliance
     const enhancedPrompt = `${prompt} . Cinematic, 8k, photorealistic, high quality.`;
 
-    // --- FALLBACK CHAIN FOR IMAGES ---
-    // 1. Flash Image (Fast & Reliable) -> 2. Pro Image (High Quality) -> 3. Imagen (Backup)
-    const geminiModels = ['gemini-2.5-flash-image', 'gemini-3-pro-image-preview'];
-
-    for (const model of geminiModels) {
-        try {
-            const response = await ai.models.generateContent({ model, contents: [{ parts: [{ text: enhancedPrompt }] }] });
-            const parts = response.candidates?.[0]?.content?.parts;
-            if (parts) {
-                for (const part of parts) {
-                    if (part.inlineData) {
-                        const base64Data = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-                        updateMessage(sessionId, placeholderId, { type: 'image', content: base64Data });
-                        persistMessageUpdate(placeholderId, { type: 'image', content: base64Data });
-                        setIsProcessing(false);
-                        return; 
-                    }
+    try {
+        // PRIORITY 1: Gemini 2.5 Flash Image (The 'Nano Banana' equivalent)
+        // This is the most stable model for direct generation
+        const response = await ai.models.generateContent({ 
+            model: 'gemini-2.5-flash-image', 
+            contents: { parts: [{ text: enhancedPrompt }] } 
+        });
+        
+        const parts = response.candidates?.[0]?.content?.parts;
+        if (parts) {
+            for (const part of parts) {
+                if (part.inlineData) {
+                    const base64Data = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+                    updateMessage(sessionId, placeholderId, { type: 'image', content: base64Data });
+                    persistMessageUpdate(placeholderId, { type: 'image', content: base64Data });
+                    setIsProcessing(false);
+                    return; 
                 }
             }
-        } catch (e) { console.warn(`Model ${model} failed, switching...`); }
+        }
+    } catch (e) { 
+        console.warn("Flash Image failed, trying backup..."); 
     }
 
-    // Last Resort: Imagen
+    // PRIORITY 2: Imagen (Backup)
     try {
-        const response = await ai.models.generateImages({ model: 'imagen-3.0-generate-001', prompt: enhancedPrompt, config: { numberOfImages: 1, aspectRatio: '1:1', outputMimeType: 'image/jpeg' } });
+        const response = await ai.models.generateImages({ 
+            model: 'imagen-3.0-generate-001', 
+            prompt: enhancedPrompt, 
+            config: { numberOfImages: 1, aspectRatio: '1:1', outputMimeType: 'image/jpeg' } 
+        });
         const b64 = response.generatedImages?.[0]?.image?.imageBytes;
         if (b64) {
             const base64Data = `data:image/jpeg;base64,${b64}`;
