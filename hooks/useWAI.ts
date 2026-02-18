@@ -184,6 +184,16 @@ export const useWAI = () => {
     setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, messages: s.messages.map(m => m.id === messageId ? { ...m, ...updates } : m), updatedAt: new Date() } : s));
   }, []);
 
+  // Dedicated function to persist updates to DB
+  const persistMessageUpdate = useCallback(async (messageId: string, updates: Partial<Message>) => {
+      if (!user) return;
+      await supabase.from('messages').update({
+          content: updates.content,
+          type: updates.type,
+          sources: updates.sources ? JSON.stringify(updates.sources) : null
+      }).eq('id', messageId);
+  }, [user]);
+
   const deleteSession = useCallback(async (id: string) => {
     setSessions(prev => {
       const filtered = prev.filter(s => s.id !== id);
@@ -204,11 +214,12 @@ export const useWAI = () => {
     
     const apiKey = getApiKey();
     const ai = new GoogleGenAI({ apiKey });
-    const enhancedPrompt = `${prompt} . Cinematic, 8k, photorealistic.`;
+    // Use the exact prompt for quality, slightly enhanced for model compliance
+    const enhancedPrompt = `${prompt} . Cinematic, 8k, photorealistic, high quality.`;
 
     // --- FALLBACK CHAIN FOR IMAGES ---
-    // 1. Pro (Best) -> 2. Flash (Fast) -> 3. Imagen (Legacy/Backup)
-    const geminiModels = ['gemini-3-pro-image-preview', 'gemini-2.5-flash-image'];
+    // 1. Flash Image (Fast & Reliable) -> 2. Pro Image (High Quality) -> 3. Imagen (Backup)
+    const geminiModels = ['gemini-2.5-flash-image', 'gemini-3-pro-image-preview'];
 
     for (const model of geminiModels) {
         try {
@@ -217,7 +228,9 @@ export const useWAI = () => {
             if (parts) {
                 for (const part of parts) {
                     if (part.inlineData) {
-                        updateMessage(sessionId, placeholderId, { type: 'image', content: `data:${part.inlineData.mimeType};base64,${part.inlineData.data}` });
+                        const base64Data = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
+                        updateMessage(sessionId, placeholderId, { type: 'image', content: base64Data });
+                        persistMessageUpdate(placeholderId, { type: 'image', content: base64Data });
                         setIsProcessing(false);
                         return; 
                     }
@@ -231,7 +244,9 @@ export const useWAI = () => {
         const response = await ai.models.generateImages({ model: 'imagen-3.0-generate-001', prompt: enhancedPrompt, config: { numberOfImages: 1, aspectRatio: '1:1', outputMimeType: 'image/jpeg' } });
         const b64 = response.generatedImages?.[0]?.image?.imageBytes;
         if (b64) {
-            updateMessage(sessionId, placeholderId, { type: 'image', content: `data:image/jpeg;base64,${b64}` });
+            const base64Data = `data:image/jpeg;base64,${b64}`;
+            updateMessage(sessionId, placeholderId, { type: 'image', content: base64Data });
+            persistMessageUpdate(placeholderId, { type: 'image', content: base64Data });
             setIsProcessing(false);
             return;
         }
@@ -391,6 +406,7 @@ export const useWAI = () => {
                 if (gChunks) sources.push(...gChunks.filter((c: any) => c.web?.uri && c.web?.title).map((c: any) => ({ title: c.web.title, uri: c.web.uri })));
             }
             updateMessage(targetSessionId, streamId, { content: accumulatedText, sources: sources.length > 0 ? sources : undefined });
+            persistMessageUpdate(streamId, { content: accumulatedText, sources: sources.length > 0 ? sources : undefined });
             setIsProcessing(false);
             return; // SUCCESS - Exit function
         } catch(e: any) {
@@ -402,7 +418,7 @@ export const useWAI = () => {
         }
     }
     setIsProcessing(false);
-  }, [user, activeSessionId, createNewChat, addMessage, updateMessage, chatMode]); 
+  }, [user, activeSessionId, createNewChat, addMessage, updateMessage, chatMode, persistMessageUpdate]); 
 
   return { 
     messages: sessions.find(s => s.id === activeSessionId)?.messages || [], sessions, activeSessionId, setActiveSessionId, createNewChat, resetChat, deleteSession,
