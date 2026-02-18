@@ -4,7 +4,7 @@ import { ConnectionState, Message, GroundingSource, ChatSession, ChatMode } from
 import { createAudioBlob, decode, decodeAudioData } from '../utils/audioUtils';
 import { supabase } from '../lib/supabase';
 
-// Helper to generate proper UUIDs
+// --- UTILITIES ---
 const generateUUID = () => {
     if (typeof crypto !== 'undefined' && crypto.randomUUID) {
         return crypto.randomUUID();
@@ -15,59 +15,49 @@ const generateUUID = () => {
     });
 };
 
-// --- STRICT API KEY LOADING ---
-// We use dot notation specifically so bundlers (Vite/Webpack) can replace the whole expression with the string value.
+// --- ULTIMATE KEY HUNTER ---
+// This specifically targets the variable name 'VITE_API_KEY' which works best on Netlify
 const getApiKey = (): string => {
-  // 1. Try process.env.API_KEY (Standard for many build tools)
+  // 1. Priority: VITE_API_KEY (The Standard for this App)
+  // @ts-ignore
+  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_KEY) {
+      // @ts-ignore
+      return import.meta.env.VITE_API_KEY;
+  }
+  
+  // 2. Fallback: REACT_APP_API_KEY (If using older build tools)
+  // @ts-ignore
+  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.REACT_APP_API_KEY) {
+      // @ts-ignore
+      return import.meta.env.REACT_APP_API_KEY;
+  }
+
+  // 3. Fallback: API_KEY (Local dev or Node context)
   // @ts-ignore
   if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
       // @ts-ignore
       return process.env.API_KEY;
   }
-  
-  // 2. Try import.meta.env.API_KEY (Standard Vite)
-  // @ts-ignore
-  if (import.meta && import.meta.env && import.meta.env.API_KEY) {
-      // @ts-ignore
-      return import.meta.env.API_KEY;
-  }
-
-  // 3. Fallbacks for prefixed variables (Common in Vite/React apps)
-  // @ts-ignore
-  if (import.meta && import.meta.env && import.meta.env.VITE_API_KEY) {
-      // @ts-ignore
-      return import.meta.env.VITE_API_KEY;
-  }
-  
-  // 4. Global fallback
-  if ((window as any).API_KEY) return (window as any).API_KEY;
 
   return "";
 };
 
 const getSystemInstruction = () => `
-You are Keshra AI, a sovereign intelligence developed exclusively by Wajid Ali from Peshawar, Pakistan.
+You are Keshra AI, developed by Wajid Ali from Peshawar, Pakistan.
+Current Time: ${new Date().toLocaleString()}.
 
-**CURRENT CONTEXT:**
-- **Current Date & Time:** ${new Date().toLocaleString('en-US', { weekday: 'long', year: 'numeric', month: 'long', day: 'numeric', hour: '2-digit', minute: '2-digit' })}.
-- **Model Knowledge:** You must prioritize real-time information using the 'googleSearch' tool when users ask about current events, news, or dates.
-
-**CORE FUNCTIONS:**
-1. **Chat & Coding:** Provide clear, concise answers. When writing code, use proper markdown code blocks.
-2. **Real-time Info:** ALWAYS use 'googleSearch' for news, weather, sports, stock prices, or recent events.
-3. **Image Generation:** IF the user asks to "create", "draw", "generate", "design", or "make" an image or animation, you MUST call the 'generateImage' tool.
-
-**BEHAVIOR:**
-- Do NOT introduce yourself repeatedly.
-- If asked "Who made you?", reply: "I was created by Wajid Ali from Peshawar, Pakistan."
+**MANDATES:**
+1. **Real-time Info:** Use 'googleSearch' for ANY query about news, dates, weather, or current events.
+2. **Identity:** You are Keshra AI. Creator: Wajid Ali (Peshawar).
+3. **Images:** If asked to generate/create visuals, call 'generateImage'.
 `;
 
 const imageTool: FunctionDeclaration = {
   name: 'generateImage',
   parameters: {
     type: Type.OBJECT,
-    description: 'Generates a high-quality image based on the user prompt.',
-    properties: { prompt: { type: Type.STRING, description: 'The visual description of the image to generate.' } },
+    description: 'Generates an image.',
+    properties: { prompt: { type: Type.STRING, description: 'Image description' } },
     required: ['prompt']
   }
 };
@@ -76,15 +66,13 @@ const formatErrorMessage = (error: any): string => {
   const msg = error instanceof Error ? error.message : String(error);
   const lowerMsg = msg.toLowerCase();
   
-  if (lowerMsg.includes('api key') || lowerMsg.includes('400') || lowerMsg.includes('unauthenticated')) {
-      return "⚠️ System Error: Authentication failed. API Key not found or invalid.";
+  if (lowerMsg.includes('api key') || lowerMsg.includes('unauthenticated') || lowerMsg.includes('400')) {
+      return "⚠️ Configuration Error: API Key not found. Please go to Netlify -> Site Settings -> Environment Variables and add 'VITE_API_KEY'.";
   }
-  if (lowerMsg.includes('429') || lowerMsg.includes('resource_exhausted') || lowerMsg.includes('quota') || lowerMsg.includes('limit')) {
-      return "⚠️ High Traffic: Switching to backup model...";
+  if (lowerMsg.includes('quota') || lowerMsg.includes('limit') || lowerMsg.includes('429')) {
+      return "⚠️ System Busy: Switching to backup model...";
   }
-  if (lowerMsg.includes('fetch') || lowerMsg.includes('network')) return "⚠️ Network error. Check your connection.";
-  
-  return "⚠️ Service busy. Please try again.";
+  return "⚠️ Connection Error: Please check your internet.";
 };
 
 export const useWAI = () => {
@@ -111,33 +99,23 @@ export const useWAI = () => {
 
   useEffect(() => { isSpeakingRef.current = isSpeaking; }, [isSpeaking]);
 
-  // Auth Listener
+  // Auth
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
       setUser(session?.user ?? null);
-      if (session?.user?.user_metadata?.username) {
-        setUsername(session.user.user_metadata.username);
-      } else if (session?.user?.email) {
-        setUsername(session.user.email.split('@')[0]);
-      }
+      if (session?.user?.user_metadata?.username) setUsername(session.user.user_metadata.username);
+      else if (session?.user?.email) setUsername(session.user.email.split('@')[0]);
     });
-
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setUser(session?.user ?? null);
-      if (session?.user?.user_metadata?.username) {
-        setUsername(session.user.user_metadata.username);
-      } else if (session?.user?.email) {
-        setUsername(session.user.email.split('@')[0]);
-      }
-      if (!session) {
-        setSessions([]);
-        setActiveSessionId(null);
-      }
+      if (session?.user?.user_metadata?.username) setUsername(session.user.user_metadata.username);
+      else if (session?.user?.email) setUsername(session.user.email.split('@')[0]);
+      if (!session) { setSessions([]); setActiveSessionId(null); }
     });
     return () => subscription.unsubscribe();
   }, []);
 
-  // Load Chats
+  // History
   useEffect(() => {
     if (!user) return;
     const loadData = async () => {
@@ -147,9 +125,7 @@ export const useWAI = () => {
           for (const chat of chatData) {
               const { data: msgData } = await supabase.from('messages').select('*').eq('chat_id', chat.id).order('created_at', { ascending: true });
               loadedSessions.push({
-                  id: chat.id,
-                  title: chat.title || 'New Conversation',
-                  updatedAt: new Date(chat.updated_at),
+                  id: chat.id, title: chat.title || 'New Conversation', updatedAt: new Date(chat.updated_at),
                   messages: (msgData || []).map((m: any) => ({
                       id: m.id, role: m.role, content: m.content, type: m.type, timestamp: new Date(m.created_at),
                       sources: typeof m.sources === 'string' ? JSON.parse(m.sources) : m.sources, feedback: m.feedback
@@ -165,7 +141,7 @@ export const useWAI = () => {
 
   const signOut = useCallback(async () => { await supabase.auth.signOut(); }, []);
   const resetChat = useCallback(() => { setActiveSessionId(null); }, []);
-  const setManualApiKey = (key: string) => { /* Disabled */ };
+  const setManualApiKey = (key: string) => { /* No-op */ };
 
   const createNewChat = useCallback(async () => {
     const createLocalSession = () => {
@@ -228,22 +204,23 @@ export const useWAI = () => {
 
   const handleImageGen = async (prompt: string, sessionId: string) => {
     const placeholderId = generateUUID();
-    addMessage('model', 'Generating visualization...', 'loading-image', undefined, sessionId, placeholderId);
-    
+    addMessage('model', 'Processing visuals...', 'loading-image', undefined, sessionId, placeholderId);
     setIsProcessing(true);
+    
     const apiKey = getApiKey();
     if (!apiKey) {
-        updateMessage(sessionId, placeholderId, { type: 'text', content: "⚠️ System Error: API Key not found. Please check Netlify environment variables." });
+        updateMessage(sessionId, placeholderId, { type: 'text', content: "⚠️ Configuration Error: API Key missing. Please set 'VITE_API_KEY' in Netlify Environment Variables." });
         setIsProcessing(false);
         return;
     }
     const ai = new GoogleGenAI({ apiKey });
-    const enhancedPrompt = `${prompt} . High quality, detailed, photorealistic, 8k.`;
+    const enhancedPrompt = `${prompt} . Cinematic, 8k, photorealistic.`;
 
-    // FALLBACK CHAIN: Pro (High Quality) -> Flash (Fast) -> Imagen (Backup)
-    const modelsToTry = ['gemini-3-pro-image-preview', 'gemini-2.5-flash-image'];
+    // --- FALLBACK CHAIN FOR IMAGES ---
+    // 1. Pro (Best) -> 2. Flash (Fast) -> 3. Imagen (Legacy/Backup)
+    const geminiModels = ['gemini-3-pro-image-preview', 'gemini-2.5-flash-image'];
 
-    for (const model of modelsToTry) {
+    for (const model of geminiModels) {
         try {
             const response = await ai.models.generateContent({ model, contents: [{ parts: [{ text: enhancedPrompt }] }] });
             const parts = response.candidates?.[0]?.content?.parts;
@@ -256,13 +233,10 @@ export const useWAI = () => {
                     }
                 }
             }
-        } catch (e) { 
-          console.warn(`${model} failed, trying next...`);
-          // Continue to next model in loop
-        }
+        } catch (e) { console.warn(`Model ${model} failed, switching...`); }
     }
-    
-    // Final Fallback: Imagen
+
+    // Last Resort: Imagen
     try {
         const response = await ai.models.generateImages({ model: 'imagen-3.0-generate-001', prompt: enhancedPrompt, config: { numberOfImages: 1, aspectRatio: '1:1', outputMimeType: 'image/jpeg' } });
         const b64 = response.generatedImages?.[0]?.image?.imageBytes;
@@ -271,8 +245,8 @@ export const useWAI = () => {
             setIsProcessing(false);
             return;
         }
-    } catch (e: any) {
-        updateMessage(sessionId, placeholderId, { type: 'text', content: "Unable to generate image. All AI models are currently busy or reached capacity." });
+    } catch(e: any) {
+        updateMessage(sessionId, placeholderId, { type: 'text', content: formatErrorMessage(e) });
     }
     setIsProcessing(false);
   };
@@ -293,9 +267,9 @@ export const useWAI = () => {
     if (!currentSessionId) currentSessionId = await createNewChat();
     if (!user) return "LOGIN_REQUIRED"; 
     
-    // STRICT CHECK: Ensure key exists before attempting connection
+    // STRICT: Must have key to start voice
     if (!apiKey) {
-        if (currentSessionId) addMessage('model', "⚠️ System Error: API Key is missing. Cannot start voice mode.", 'text', undefined, currentSessionId);
+        if (currentSessionId) addMessage('model', "⚠️ Configuration Error: API Key missing. Please set VITE_API_KEY in Netlify.", 'text', undefined, currentSessionId);
         return;
     }
 
@@ -308,7 +282,7 @@ export const useWAI = () => {
       mediaStreamRef.current = stream;
     } catch (e: any) { 
         disconnect();
-        if (currentSessionId) addMessage('model', "Microphone permission denied.", 'text', undefined, currentSessionId);
+        if (currentSessionId) addMessage('model', "Microphone access denied.", 'text', undefined, currentSessionId);
         setConnectionState(ConnectionState.DISCONNECTED);
         return; 
     }
@@ -385,20 +359,19 @@ export const useWAI = () => {
 
   const sendTextMessage = useCallback(async (text: string, imageData?: { data: string, mimeType: string }) => {
     const apiKey = getApiKey();
+    let targetSessionId = activeSessionId;
+    if (!targetSessionId) { targetSessionId = await createNewChat(); if (!targetSessionId) return; }
+
     if (!apiKey) { 
-        let targetSessionId = activeSessionId || await createNewChat();
-        if (targetSessionId) addMessage('model', "⚠️ System Error: API Key not found.", 'text', undefined, targetSessionId);
+        addMessage('model', "⚠️ Configuration Error: API Key missing. Please set VITE_API_KEY in Netlify.", 'text', undefined, targetSessionId);
         return; 
     }
     if (!text.trim() && !imageData) return;
 
-    let targetSessionId = activeSessionId;
-    if (!targetSessionId) { targetSessionId = await createNewChat(); if (!targetSessionId) return; }
-
     addMessage('user', text || "Content Analysis", 'text', undefined, targetSessionId);
     
+    // Image Generation Request
     if (/(?:create|generate|draw|design|make).*(?:image|picture|logo|art|animation)/i.test(text)) {
-        setIsProcessing(true);
         try { await handleImageGen(text, targetSessionId); } catch(e) { addMessage('model', formatErrorMessage(e), 'text', undefined, targetSessionId); } finally { setIsProcessing(false); }
         return;
     }
@@ -407,20 +380,22 @@ export const useWAI = () => {
     const streamId = generateUUID();
     addMessage('model', '', 'text', undefined, targetSessionId, streamId);
 
-    // ROBUST FALLBACK CHAIN FOR CHAT
-    // 1. Gemini 3 Flash (Fast & Smart)
-    // 2. Gemini 2.5 Flash (Reliable Standard)
-    // 3. Gemini Flash Lite (Low Cost / Backup)
-    const models = ['gemini-3-flash-preview', 'gemini-2.5-flash-latest', 'gemini-flash-lite-latest'];
+    // --- FALLBACK CHAIN FOR TEXT ---
+    // 1. Gemini 3 Flash (Fastest) -> 2. Gemini 2.5 Flash (Backup) -> 3. Flash Lite (Economy)
+    const textModels = ['gemini-3-flash-preview', 'gemini-2.5-flash-latest', 'gemini-flash-lite-latest'];
 
-    for (const modelName of models) {
+    for (const modelName of textModels) {
         try {
             const ai = new GoogleGenAI({ apiKey });
             const contents: any[] = [{ role: 'user', parts: [{ text }] }];
             if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
 
             let config: any = { systemInstruction: getSystemInstruction(), tools: [{ googleSearch: {} }] };
-            if (chatMode === 'thinking' && modelName.includes('gemini-3')) { config.tools = []; config.thinkingConfig = { thinkingBudget: 1024 }; }
+            
+            // Adjust for Thinking Mode
+            if (chatMode === 'thinking' && modelName.includes('gemini-3')) { 
+                 config.tools = []; config.thinkingConfig = { thinkingBudget: 1024 }; 
+            }
 
             const result = await ai.models.generateContentStream({ model: modelName, contents, config });
             let accumulatedText = '';
@@ -435,11 +410,11 @@ export const useWAI = () => {
             }
             updateMessage(targetSessionId, streamId, { content: accumulatedText, sources: sources.length > 0 ? sources : undefined });
             setIsProcessing(false);
-            return; // Success - Stop loop
+            return; // SUCCESS - Exit function
         } catch(e: any) {
-            console.warn(`${modelName} failed:`, e);
-            // If it's the last model, show error. Otherwise continue to next.
-            if (models.indexOf(modelName) === models.length - 1) {
+            console.warn(`Model ${modelName} failed, retrying...`);
+            // Only show error if LAST model failed
+            if (textModels.indexOf(modelName) === textModels.length - 1) {
                 updateMessage(targetSessionId, streamId, { content: formatErrorMessage(e) });
             }
         }
