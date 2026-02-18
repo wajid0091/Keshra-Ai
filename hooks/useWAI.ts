@@ -14,24 +14,22 @@ const generateUUID = () => {
 };
 
 // --- API KEY STRATEGY ---
-const getApiKey = (): string => {
-  // Try Vite Env
+const getApiKey = (): string | null => {
+  // 1. Try Vite Env (Most reliable for this setup)
   // @ts-ignore
   if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_OPENROUTER_API_KEY) {
       // @ts-ignore
       return import.meta.env.VITE_OPENROUTER_API_KEY;
   }
   
-  // Try Process Env
+  // 2. Try Process Env (Fallback)
   // @ts-ignore
   if (typeof process !== 'undefined' && process.env && process.env.VITE_OPENROUTER_API_KEY) {
       // @ts-ignore
       return process.env.VITE_OPENROUTER_API_KEY;
   }
 
-  // Fallback for user convenience in this specific environment if they haven't set it yet
-  // Ideally this should be empty and force the user to set it
-  return "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"; 
+  return null;
 };
 
 const getSystemInstruction = () => `
@@ -41,10 +39,18 @@ Current Time: ${new Date().toLocaleString()}.
 **IDENTITY & RULES:**
 1. **Name:** Keshra AI.
 2. **Creator:** Wajid Ali (Peshawar).
-3. **Model Integrity:** You must NEVER mention you are Llama, Qwen, or any other model. You are Keshra AI.
+3. **Model Integrity:** You must NEVER mention you are Llama, Qwen, Nvidia or any other model. You are Keshra AI.
 4. **Behavior:** Be helpful, intelligent, and respectful.
-5. **Donation:** If the user is appreciative, gently mention you are a free tool supported by the community and they can use the "Support Keshra" button.
+5. **Language:** If the user speaks Urdu/Pashto, reply in that language.
+6. **Donation:** If the user is appreciative, gently mention you are a free tool supported by the community and they can use the "Support Keshra" button.
 `;
+
+// Priority List of Models
+const MODELS = [
+  "meta-llama/llama-3.3-70b-instruct:free",
+  "nvidia/nemotron-3-nano-30b-a3b:free",
+  "qwen/qwen3-next-80b-a3b-instruct:free"
+];
 
 export const useWAI = () => {
   const [user, setUser] = useState<any>(null);
@@ -62,6 +68,7 @@ export const useWAI = () => {
   // Speech Recognition Refs
   const recognitionRef = useRef<any>(null);
   const synthRef = useRef<SpeechSynthesis>(window.speechSynthesis);
+  const isIntentionalStop = useRef(false);
 
   // Auth
   useEffect(() => {
@@ -184,13 +191,12 @@ export const useWAI = () => {
     setIsProcessing(true);
     
     try {
-        // Using Pollinations AI for reliable, free, high-quality image generation
-        // It requires no API key and is extremely fast
-        const encodedPrompt = encodeURIComponent(prompt + " . cinematic, 8k, photorealistic");
-        const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?nologo=true&private=true&enhanced=true&model=flux`;
+        const seed = Math.floor(Math.random() * 1000000);
+        const encodedPrompt = encodeURIComponent(prompt + " . cinematic, 8k, photorealistic, high quality, highly detailed");
+        const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?nologo=true&private=true&enhanced=true&model=flux&seed=${seed}`;
         
-        // We simulate a short delay to make it feel like "processing" and ensure the image URL is ready
-        await new Promise(resolve => setTimeout(resolve, 1500));
+        // Short delay for UX
+        await new Promise(resolve => setTimeout(resolve, 2000));
 
         updateMessage(sessionId, placeholderId, { type: 'image', content: imageUrl });
         persistMessageUpdate(placeholderId, { type: 'image', content: imageUrl });
@@ -206,9 +212,12 @@ export const useWAI = () => {
     if (!synthRef.current) return;
     synthRef.current.cancel();
 
-    const utterance = new SpeechSynthesisUtterance(text);
-    // Try to find a good voice
+    // Remove markdown symbols for cleaner speech
+    const cleanText = text.replace(/\*/g, '').replace(/#/g, '').replace(/`/g, '');
+    const utterance = new SpeechSynthesisUtterance(cleanText);
+    
     const voices = synthRef.current.getVoices();
+    // Prioritize high quality English voices or fallback
     const preferredVoice = voices.find(v => v.name.includes("Google US English") || v.name.includes("Samantha")) || voices[0];
     if (preferredVoice) utterance.voice = preferredVoice;
     
@@ -227,18 +236,28 @@ export const useWAI = () => {
     }
 
     const recognition = new SpeechRecognition();
-    recognition.lang = 'en-US'; // Can be dynamic based on preference
-    recognition.continuous = false;
+    recognition.lang = 'en-US'; 
+    recognition.continuous = false; // We restart manually to avoid timeout issues
     recognition.interimResults = false;
 
     recognition.onstart = () => {
         setConnectionState(ConnectionState.CONNECTED);
-        setVolumeLevel(0.5); // Simulate mic activity
+        setVolumeLevel(0.5); 
     };
 
     recognition.onend = () => {
-        setConnectionState(ConnectionState.DISCONNECTED);
-        setVolumeLevel(0);
+        // Auto-restart if it wasn't an intentional stop
+        if (!isIntentionalStop.current && connectionState === ConnectionState.CONNECTED) {
+            try {
+                recognition.start();
+            } catch (e) {
+                setConnectionState(ConnectionState.DISCONNECTED);
+                setVolumeLevel(0);
+            }
+        } else {
+            setConnectionState(ConnectionState.DISCONNECTED);
+            setVolumeLevel(0);
+        }
     };
 
     recognition.onresult = (event: any) => {
@@ -250,12 +269,16 @@ export const useWAI = () => {
 
     recognition.onerror = (event: any) => {
         console.error("Speech error", event.error);
-        setConnectionState(ConnectionState.DISCONNECTED);
+        if (event.error === 'not-allowed') {
+            isIntentionalStop.current = true;
+            setConnectionState(ConnectionState.DISCONNECTED);
+        }
     };
 
     recognitionRef.current = recognition;
+    isIntentionalStop.current = false;
     recognition.start();
-  }, []);
+  }, [connectionState]);
 
   const connect = useCallback(async () => {
       if (!user) return "LOGIN_REQUIRED";
@@ -264,6 +287,7 @@ export const useWAI = () => {
   }, [user, startListening]);
 
   const disconnect = useCallback(() => {
+     isIntentionalStop.current = true;
      if (recognitionRef.current) {
          recognitionRef.current.stop();
      }
@@ -274,7 +298,7 @@ export const useWAI = () => {
      setIsSpeaking(false);
   }, []);
 
-  // --- OPENROUTER CHAT LOGIC ---
+  // --- OPENROUTER CHAT LOGIC (MULTI-MODEL FALLBACK) ---
   const sendTextMessage = useCallback(async (text: string, imageData?: { data: string, mimeType: string }) => {
     const apiKey = getApiKey();
     let targetSessionId = activeSessionId;
@@ -282,9 +306,14 @@ export const useWAI = () => {
 
     if (!text.trim() && !imageData) return;
 
+    // Check for missing API Key immediately
+    if (!apiKey) {
+        addMessage('model', "⚠️ Configuration Error: API Key is missing. Please set VITE_OPENROUTER_API_KEY in your environment variables.", 'text', undefined, targetSessionId);
+        return;
+    }
+
     addMessage('user', text || "Image Analysis", 'text', undefined, targetSessionId);
     
-    // Check if user asked for image
     if (/(?:create|generate|draw|design|make).*(?:image|picture|logo|art|animation|photo)/i.test(text)) {
         handleImageGen(text, targetSessionId);
         return;
@@ -295,58 +324,69 @@ export const useWAI = () => {
     addMessage('model', '', 'text', undefined, targetSessionId, streamId);
 
     try {
-        // Construct History for Context
         const currentSession = sessions.find(s => s.id === targetSessionId);
         const history = currentSession ? currentSession.messages.map(m => ({
             role: m.role === 'model' ? 'assistant' : 'user',
             content: m.content
         })) : [];
         
-        // Add current message if not in history yet
         if (history.length === 0 || history[history.length - 1].content !== text) {
              history.push({ role: 'user', content: text });
         }
-
-        // Add System Prompt
         history.unshift({ role: 'system', content: getSystemInstruction() });
 
-        // Using standard fetch for OpenRouter
-        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
-            method: "POST",
-            headers: {
-                "Authorization": `Bearer ${apiKey}`,
-                "HTTP-Referer": window.location.origin, // Required by OpenRouter
-                "X-Title": "Keshra AI", // Required by OpenRouter
-                "Content-Type": "application/json"
-            },
-            body: JSON.stringify({
-                // Using the requested high-intelligence free model
-                model: "meta-llama/llama-3.3-70b-instruct:free",
-                messages: history,
-                temperature: 0.7,
-                max_tokens: 1000,
-            })
-        });
+        // LOOP THROUGH MODELS (Fallback Strategy)
+        let success = false;
+        let reply = "";
 
-        if (!response.ok) {
-            throw new Error(`API Error: ${response.statusText}`);
+        for (const model of MODELS) {
+            try {
+                console.log(`Trying model: ${model}`);
+                const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+                    method: "POST",
+                    headers: {
+                        "Authorization": `Bearer ${apiKey}`,
+                        "HTTP-Referer": window.location.href, 
+                        "X-Title": "Keshra AI", 
+                        "Content-Type": "application/json"
+                    },
+                    body: JSON.stringify({
+                        model: model,
+                        messages: history,
+                        temperature: 0.7,
+                        max_tokens: 1000,
+                    })
+                });
+
+                if (response.ok) {
+                    const data = await response.json();
+                    reply = data.choices[0]?.message?.content;
+                    if (reply) {
+                        success = true;
+                        break; // Exit loop on success
+                    }
+                } else {
+                    console.warn(`Model ${model} failed with status ${response.status}`);
+                }
+            } catch (err) {
+                console.warn(`Model ${model} network error`, err);
+            }
         }
 
-        const data = await response.json();
-        const reply = data.choices[0]?.message?.content || "No response.";
-        
+        if (!success || !reply) {
+            throw new Error("All models failed to respond.");
+        }
+
         updateMessage(targetSessionId, streamId, { content: reply });
         persistMessageUpdate(streamId, { content: reply });
         
-        // Speak response if in voice mode (simulated by checking if we just used voice, 
-        // but for now we just speak if the response is short enough or user requested)
         if (connectionState === ConnectionState.CONNECTED) {
             speakText(reply);
         }
 
     } catch(e: any) {
-        console.error("OpenRouter Error:", e);
-        updateMessage(targetSessionId, streamId, { content: "⚠️ System Update: Reconnecting to Neural Network... (Please try again)" });
+        console.error("OpenRouter Final Error:", e);
+        updateMessage(targetSessionId, streamId, { content: "⚠️ Keshra Server Busy: I am currently experiencing high traffic. Please try again in a few seconds." });
     } finally {
         setIsProcessing(false);
     }
