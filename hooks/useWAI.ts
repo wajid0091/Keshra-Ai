@@ -15,31 +15,25 @@ const generateUUID = () => {
     });
 };
 
-// --- ULTIMATE KEY HUNTER ---
-// This specifically targets the variable name 'VITE_API_KEY' which works best on Netlify
+// --- API KEY STRATEGY: GUARANTEED ACCESS ---
 const getApiKey = (): string => {
-  // 1. Priority: VITE_API_KEY (The Standard for this App)
+  // 1. Try Netlify/Vite Environment Variable (Preferred)
   // @ts-ignore
   if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_KEY) {
       // @ts-ignore
       return import.meta.env.VITE_API_KEY;
   }
   
-  // 2. Fallback: REACT_APP_API_KEY (If using older build tools)
-  // @ts-ignore
-  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.REACT_APP_API_KEY) {
-      // @ts-ignore
-      return import.meta.env.REACT_APP_API_KEY;
-  }
-
-  // 3. Fallback: API_KEY (Local dev or Node context)
+  // 2. Try Standard Process Env
   // @ts-ignore
   if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
       // @ts-ignore
       return process.env.API_KEY;
   }
 
-  return "";
+  // 3. HARDCODED FALLBACK (DIRECT INJECTION)
+  // This ensures the app works immediately on Netlify even if env vars fail.
+  return "AIzaSyB_QBA6mA4I8WHbpI7bKisvzSaPBmQqzxE";
 };
 
 const getSystemInstruction = () => `
@@ -66,8 +60,9 @@ const formatErrorMessage = (error: any): string => {
   const msg = error instanceof Error ? error.message : String(error);
   const lowerMsg = msg.toLowerCase();
   
+  // Since we hardcoded the key, this error should theoretically never happen unless the key itself is revoked.
   if (lowerMsg.includes('api key') || lowerMsg.includes('unauthenticated') || lowerMsg.includes('400')) {
-      return "⚠️ Configuration Error: API Key not found. Please go to Netlify -> Site Settings -> Environment Variables and add 'VITE_API_KEY'.";
+      return "⚠️ System Error: The embedded API Key is invalid or expired. Please contact Wajid Ali.";
   }
   if (lowerMsg.includes('quota') || lowerMsg.includes('limit') || lowerMsg.includes('429')) {
       return "⚠️ System Busy: Switching to backup model...";
@@ -208,11 +203,6 @@ export const useWAI = () => {
     setIsProcessing(true);
     
     const apiKey = getApiKey();
-    if (!apiKey) {
-        updateMessage(sessionId, placeholderId, { type: 'text', content: "⚠️ Configuration Error: API Key missing. Please set 'VITE_API_KEY' in Netlify Environment Variables." });
-        setIsProcessing(false);
-        return;
-    }
     const ai = new GoogleGenAI({ apiKey });
     const enhancedPrompt = `${prompt} . Cinematic, 8k, photorealistic.`;
 
@@ -267,12 +257,7 @@ export const useWAI = () => {
     if (!currentSessionId) currentSessionId = await createNewChat();
     if (!user) return "LOGIN_REQUIRED"; 
     
-    // STRICT: Must have key to start voice
-    if (!apiKey) {
-        if (currentSessionId) addMessage('model', "⚠️ Configuration Error: API Key missing. Please set VITE_API_KEY in Netlify.", 'text', undefined, currentSessionId);
-        return;
-    }
-
+    // API Key is now guaranteed by getApiKey()
     disconnect(); 
     setConnectionState(ConnectionState.CONNECTING);
     
@@ -362,10 +347,7 @@ export const useWAI = () => {
     let targetSessionId = activeSessionId;
     if (!targetSessionId) { targetSessionId = await createNewChat(); if (!targetSessionId) return; }
 
-    if (!apiKey) { 
-        addMessage('model', "⚠️ Configuration Error: API Key missing. Please set VITE_API_KEY in Netlify.", 'text', undefined, targetSessionId);
-        return; 
-    }
+    // No need to check for apiKey existence as it now has a hardcoded fallback
     if (!text.trim() && !imageData) return;
 
     addMessage('user', text || "Content Analysis", 'text', undefined, targetSessionId);
