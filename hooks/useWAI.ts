@@ -32,7 +32,6 @@ const getApiKey = (): string => {
   }
 
   // 3. HARDCODED FALLBACK (DIRECT INJECTION)
-  // This ensures the app works immediately on Netlify even if env vars fail.
   return "AIzaSyB_QBA6mA4I8WHbpI7bKisvzSaPBmQqzxE";
 };
 
@@ -53,28 +52,17 @@ Current Time: ${new Date().toLocaleString()}.
   - Do NOT be annoying or beg. Just a polite reminder occasionally.
 `;
 
-const imageTool: FunctionDeclaration = {
-  name: 'generateImage',
-  parameters: {
-    type: Type.OBJECT,
-    description: 'Generates an image.',
-    properties: { prompt: { type: Type.STRING, description: 'Image description' } },
-    required: ['prompt']
-  }
-};
-
 const formatErrorMessage = (error: any): string => {
   const msg = error instanceof Error ? error.message : String(error);
   const lowerMsg = msg.toLowerCase();
   
-  // Since we hardcoded the key, this error should theoretically never happen unless the key itself is revoked.
   if (lowerMsg.includes('api key') || lowerMsg.includes('unauthenticated') || lowerMsg.includes('400')) {
       return "⚠️ System Error: The embedded API Key is invalid or expired. Please contact Wajid Ali.";
   }
   if (lowerMsg.includes('quota') || lowerMsg.includes('limit') || lowerMsg.includes('429')) {
       return "⚠️ System Busy: Switching to backup model...";
   }
-  return "⚠️ Connection Error: Please check your internet.";
+  return "⚠️ Network Error: Please check your connection.";
 };
 
 export const useWAI = () => {
@@ -121,22 +109,24 @@ export const useWAI = () => {
   useEffect(() => {
     if (!user) return;
     const loadData = async () => {
-      const { data: chatData } = await supabase.from('chats').select('*').eq('user_id', user.id).order('created_at', { ascending: false });
-      const loadedSessions: ChatSession[] = [];
-      if (chatData) {
-          for (const chat of chatData) {
-              const { data: msgData } = await supabase.from('messages').select('*').eq('chat_id', chat.id).order('created_at', { ascending: true });
-              loadedSessions.push({
-                  id: chat.id, title: chat.title || 'New Conversation', updatedAt: new Date(chat.updated_at),
-                  messages: (msgData || []).map((m: any) => ({
-                      id: m.id, role: m.role, content: m.content, type: m.type, timestamp: new Date(m.created_at),
-                      sources: typeof m.sources === 'string' ? JSON.parse(m.sources) : m.sources, feedback: m.feedback
-                  }))
-              });
-          }
-      }
-      setSessions(loadedSessions);
-      if (loadedSessions.length > 0 && !activeSessionId) setActiveSessionId(loadedSessions[0].id);
+      try {
+        const { data: chatData } = await supabase.from('chats').select('*').eq('user_id', user.id).order('created_at', { ascending: false });
+        const loadedSessions: ChatSession[] = [];
+        if (chatData) {
+            for (const chat of chatData) {
+                const { data: msgData } = await supabase.from('messages').select('*').eq('chat_id', chat.id).order('created_at', { ascending: true });
+                loadedSessions.push({
+                    id: chat.id, title: chat.title || 'New Conversation', updatedAt: new Date(chat.updated_at),
+                    messages: (msgData || []).map((m: any) => ({
+                        id: m.id, role: m.role, content: m.content, type: m.type, timestamp: new Date(m.created_at),
+                        sources: typeof m.sources === 'string' ? JSON.parse(m.sources) : m.sources, feedback: m.feedback
+                    }))
+                });
+            }
+        }
+        setSessions(loadedSessions);
+        if (loadedSessions.length > 0 && !activeSessionId) setActiveSessionId(loadedSessions[0].id);
+      } catch (e) { console.error("History load error", e); }
     };
     loadData();
   }, [user]);
@@ -191,7 +181,6 @@ export const useWAI = () => {
     setSessions(prev => prev.map(s => s.id === sessionId ? { ...s, messages: s.messages.map(m => m.id === messageId ? { ...m, ...updates } : m), updatedAt: new Date() } : s));
   }, []);
 
-  // Dedicated function to persist updates to DB
   const persistMessageUpdate = useCallback(async (messageId: string, updates: Partial<Message>) => {
       if (!user) return;
       await supabase.from('messages').update({
@@ -214,6 +203,7 @@ export const useWAI = () => {
       updateMessage(sessionId, messageId, { feedback });
   }, [updateMessage]);
 
+  // --- IMAGE GENERATION LOGIC ---
   const handleImageGen = async (prompt: string, sessionId: string) => {
     const placeholderId = generateUUID();
     addMessage('model', 'Processing visuals...', 'loading-image', undefined, sessionId, placeholderId);
@@ -221,12 +211,10 @@ export const useWAI = () => {
     
     const apiKey = getApiKey();
     const ai = new GoogleGenAI({ apiKey });
-    // Use the exact prompt for quality, slightly enhanced for model compliance
     const enhancedPrompt = `${prompt} . Cinematic, 8k, photorealistic, high quality.`;
 
     try {
-        // PRIORITY 1: Gemini 2.5 Flash Image (The 'Nano Banana' equivalent)
-        // This is the most stable model for direct generation
+        // Attempt 1: Gemini 2.5 Flash Image (Fast & Reliable)
         const response = await ai.models.generateContent({ 
             model: 'gemini-2.5-flash-image', 
             contents: { parts: [{ text: enhancedPrompt }] } 
@@ -244,12 +232,10 @@ export const useWAI = () => {
                 }
             }
         }
-    } catch (e) { 
-        console.warn("Flash Image failed, trying backup..."); 
-    }
+    } catch (e) { console.warn("Flash Image failed, trying backup..."); }
 
-    // PRIORITY 2: Imagen (Backup)
     try {
+        // Attempt 2: Imagen (Backup)
         const response = await ai.models.generateImages({ 
             model: 'imagen-3.0-generate-001', 
             prompt: enhancedPrompt, 
@@ -285,7 +271,6 @@ export const useWAI = () => {
     if (!currentSessionId) currentSessionId = await createNewChat();
     if (!user) return "LOGIN_REQUIRED"; 
     
-    // API Key is now guaranteed by getApiKey()
     disconnect(); 
     setConnectionState(ConnectionState.CONNECTING);
     
@@ -375,12 +360,11 @@ export const useWAI = () => {
     let targetSessionId = activeSessionId;
     if (!targetSessionId) { targetSessionId = await createNewChat(); if (!targetSessionId) return; }
 
-    // No need to check for apiKey existence as it now has a hardcoded fallback
     if (!text.trim() && !imageData) return;
 
     addMessage('user', text || "Content Analysis", 'text', undefined, targetSessionId);
     
-    // Image Generation Request
+    // Check if user asked for image
     if (/(?:create|generate|draw|design|make).*(?:image|picture|logo|art|animation)/i.test(text)) {
         try { await handleImageGen(text, targetSessionId); } catch(e) { addMessage('model', formatErrorMessage(e), 'text', undefined, targetSessionId); } finally { setIsProcessing(false); }
         return;
@@ -390,24 +374,31 @@ export const useWAI = () => {
     const streamId = generateUUID();
     addMessage('model', '', 'text', undefined, targetSessionId, streamId);
 
-    // --- FALLBACK CHAIN FOR TEXT ---
-    // 1. Gemini 3 Flash (Fastest) -> 2. Gemini 2.5 Flash (Backup) -> 3. Flash Lite (Economy)
-    const textModels = ['gemini-3-flash-preview', 'gemini-2.5-flash-latest', 'gemini-flash-lite-latest'];
+    // --- SMART RETRY LOGIC ---
+    // Try 1: Standard model WITH Tools (Search)
+    // Try 2: Standard model WITHOUT Tools (If Try 1 fails, likely due to search permission)
+    // Try 3: Fallback models (Economy)
+    
+    const attempts = [
+        { model: 'gemini-2.5-flash-latest', useTools: true },
+        { model: 'gemini-2.5-flash-latest', useTools: false },
+        { model: 'gemini-flash-lite-latest', useTools: false }
+    ];
 
-    for (const modelName of textModels) {
+    for (const attempt of attempts) {
         try {
             const ai = new GoogleGenAI({ apiKey });
             const contents: any[] = [{ role: 'user', parts: [{ text }] }];
             if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
 
-            let config: any = { systemInstruction: getSystemInstruction(), tools: [{ googleSearch: {} }] };
+            let config: any = { systemInstruction: getSystemInstruction() };
             
-            // Adjust for Thinking Mode
-            if (chatMode === 'thinking' && modelName.includes('gemini-3')) { 
-                 config.tools = []; config.thinkingConfig = { thinkingBudget: 1024 }; 
+            // Only add tools if requested
+            if (attempt.useTools) {
+                config.tools = [{ googleSearch: {} }];
             }
 
-            const result = await ai.models.generateContentStream({ model: modelName, contents, config });
+            const result = await ai.models.generateContentStream({ model: attempt.model, contents, config });
             let accumulatedText = '';
             let sources: GroundingSource[] = [];
             // @ts-ignore
@@ -423,9 +414,9 @@ export const useWAI = () => {
             setIsProcessing(false);
             return; // SUCCESS - Exit function
         } catch(e: any) {
-            console.warn(`Model ${modelName} failed, retrying...`);
-            // Only show error if LAST model failed
-            if (textModels.indexOf(modelName) === textModels.length - 1) {
+            console.warn(`Attempt with ${attempt.model} (Tools: ${attempt.useTools}) failed.`);
+            // Only show error if ALL attempts fail
+            if (attempts.indexOf(attempt) === attempts.length - 1) {
                 updateMessage(targetSessionId, streamId, { content: formatErrorMessage(e) });
             }
         }
