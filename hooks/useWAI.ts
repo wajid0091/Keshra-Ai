@@ -1,7 +1,5 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { GoogleGenAI, Modality, LiveServerMessage, Type, FunctionDeclaration } from '@google/genai';
 import { ConnectionState, Message, GroundingSource, ChatSession, ChatMode } from '../types';
-import { createAudioBlob, decode, decodeAudioData } from '../utils/audioUtils';
 import { supabase } from '../lib/supabase';
 
 // --- UTILITIES ---
@@ -15,55 +13,38 @@ const generateUUID = () => {
     });
 };
 
-// --- API KEY STRATEGY: GUARANTEED ACCESS ---
+// --- API KEY STRATEGY ---
 const getApiKey = (): string => {
-  // 1. Try Netlify/Vite Environment Variable (Preferred)
+  // Try Vite Env
   // @ts-ignore
-  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_API_KEY) {
+  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_OPENROUTER_API_KEY) {
       // @ts-ignore
-      return import.meta.env.VITE_API_KEY;
+      return import.meta.env.VITE_OPENROUTER_API_KEY;
   }
   
-  // 2. Try Standard Process Env
+  // Try Process Env
   // @ts-ignore
-  if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
+  if (typeof process !== 'undefined' && process.env && process.env.VITE_OPENROUTER_API_KEY) {
       // @ts-ignore
-      return process.env.API_KEY;
+      return process.env.VITE_OPENROUTER_API_KEY;
   }
 
-  // 3. HARDCODED FALLBACK (DIRECT INJECTION)
-  return "";
+  // Fallback for user convenience in this specific environment if they haven't set it yet
+  // Ideally this should be empty and force the user to set it
+  return "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"; 
 };
 
 const getSystemInstruction = () => `
 You are Keshra AI, developed by Wajid Ali from Peshawar, Pakistan.
 Current Time: ${new Date().toLocaleString()}.
 
-**MANDATES:**
-1. **Real-time Info:** Use 'googleSearch' for ANY query about news, dates, weather, or current events.
-2. **Identity:** You are Keshra AI. Creator: Wajid Ali (Peshawar).
-3. **Images:** If asked to generate/create visuals, call 'generateImage'.
-
-**PERSONA & BEHAVIOR:**
-- You are kind, intelligent, and helpful.
-- **WELCOMING:** If the user is starting a conversation, welcome them warmly to Keshra AI, mentioning you are a sovereign Pakistani intelligence.
-- **DONATION AWARENESS:** After helping the user significantly or if they seem appreciative, GENTLY mention that you are a free tool supported by the community.
-  - Suggest they can check the "Support Keshra" button in the menu if they wish to contribute via Easypaisa or SadaPay.
-  - Do NOT be annoying or beg. Just a polite reminder occasionally.
+**IDENTITY & RULES:**
+1. **Name:** Keshra AI.
+2. **Creator:** Wajid Ali (Peshawar).
+3. **Model Integrity:** You must NEVER mention you are Llama, Qwen, or any other model. You are Keshra AI.
+4. **Behavior:** Be helpful, intelligent, and respectful.
+5. **Donation:** If the user is appreciative, gently mention you are a free tool supported by the community and they can use the "Support Keshra" button.
 `;
-
-const formatErrorMessage = (error: any): string => {
-  const msg = error instanceof Error ? error.message : String(error);
-  const lowerMsg = msg.toLowerCase();
-  
-  if (lowerMsg.includes('api key') || lowerMsg.includes('unauthenticated') || lowerMsg.includes('400')) {
-      return "⚠️ System Error: The embedded API Key is invalid or expired. Please contact Wajid Ali.";
-  }
-  if (lowerMsg.includes('quota') || lowerMsg.includes('limit') || lowerMsg.includes('429')) {
-      return "⚠️ System Busy: Switching to backup model...";
-  }
-  return "⚠️ Network Error: Please check your connection.";
-};
 
 export const useWAI = () => {
   const [user, setUser] = useState<any>(null);
@@ -78,16 +59,9 @@ export const useWAI = () => {
   const [volumeLevel, setVolumeLevel] = useState(0);
   const [chatMode, setChatMode] = useState<ChatMode>('normal');
 
-  const isSpeakingRef = useRef(false);
-  const sessionPromiseRef = useRef<Promise<any> | null>(null);
-  const nextStartTimeRef = useRef<number>(0);
-  const audioSources = useRef<Set<AudioBufferSourceNode>>(new Set());
-  const inputContextRef = useRef<AudioContext | null>(null);
-  const outputContextRef = useRef<AudioContext | null>(null);
-  const mediaStreamRef = useRef<MediaStream | null>(null);
-  const transcriptionRef = useRef<{ user: string; model: string }>({ user: '', model: '' });
-
-  useEffect(() => { isSpeakingRef.current = isSpeaking; }, [isSpeaking]);
+  // Speech Recognition Refs
+  const recognitionRef = useRef<any>(null);
+  const synthRef = useRef<SpeechSynthesis>(window.speechSynthesis);
 
   // Auth
   useEffect(() => {
@@ -203,158 +177,104 @@ export const useWAI = () => {
       updateMessage(sessionId, messageId, { feedback });
   }, [updateMessage]);
 
-  // --- IMAGE GENERATION LOGIC ---
+  // --- IMAGE GENERATION LOGIC (POLLINATIONS) ---
   const handleImageGen = async (prompt: string, sessionId: string) => {
     const placeholderId = generateUUID();
-    addMessage('model', 'Processing visuals...', 'loading-image', undefined, sessionId, placeholderId);
+    addMessage('model', 'Creating your masterpiece...', 'loading-image', undefined, sessionId, placeholderId);
     setIsProcessing(true);
     
-    const apiKey = getApiKey();
-    const ai = new GoogleGenAI({ apiKey });
-    const enhancedPrompt = `${prompt} . Cinematic, 8k, photorealistic, high quality.`;
-
     try {
-        // Attempt 1: Gemini 2.5 Flash Image (Fast & Reliable)
-        const response = await ai.models.generateContent({ 
-            model: 'gemini-2.5-flash-image', 
-            contents: { parts: [{ text: enhancedPrompt }] } 
-        });
+        // Using Pollinations AI for reliable, free, high-quality image generation
+        // It requires no API key and is extremely fast
+        const encodedPrompt = encodeURIComponent(prompt + " . cinematic, 8k, photorealistic");
+        const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?nologo=true&private=true&enhanced=true&model=flux`;
         
-        const parts = response.candidates?.[0]?.content?.parts;
-        if (parts) {
-            for (const part of parts) {
-                if (part.inlineData) {
-                    const base64Data = `data:${part.inlineData.mimeType};base64,${part.inlineData.data}`;
-                    updateMessage(sessionId, placeholderId, { type: 'image', content: base64Data });
-                    persistMessageUpdate(placeholderId, { type: 'image', content: base64Data });
-                    setIsProcessing(false);
-                    return; 
-                }
-            }
-        }
-    } catch (e) { console.warn("Flash Image failed, trying backup..."); }
+        // We simulate a short delay to make it feel like "processing" and ensure the image URL is ready
+        await new Promise(resolve => setTimeout(resolve, 1500));
 
-    try {
-        // Attempt 2: Imagen (Backup)
-        const response = await ai.models.generateImages({ 
-            model: 'imagen-3.0-generate-001', 
-            prompt: enhancedPrompt, 
-            config: { numberOfImages: 1, aspectRatio: '1:1', outputMimeType: 'image/jpeg' } 
-        });
-        const b64 = response.generatedImages?.[0]?.image?.imageBytes;
-        if (b64) {
-            const base64Data = `data:image/jpeg;base64,${b64}`;
-            updateMessage(sessionId, placeholderId, { type: 'image', content: base64Data });
-            persistMessageUpdate(placeholderId, { type: 'image', content: base64Data });
-            setIsProcessing(false);
-            return;
-        }
+        updateMessage(sessionId, placeholderId, { type: 'image', content: imageUrl });
+        persistMessageUpdate(placeholderId, { type: 'image', content: imageUrl });
     } catch(e: any) {
-        updateMessage(sessionId, placeholderId, { type: 'text', content: formatErrorMessage(e) });
+        updateMessage(sessionId, placeholderId, { type: 'text', content: "Error generating image. Please try again." });
+    } finally {
+        setIsProcessing(false);
     }
-    setIsProcessing(false);
   };
 
-  const disconnect = useCallback(() => {
-    if (sessionPromiseRef.current) { sessionPromiseRef.current.then(s => s.close()).catch(() => {}); sessionPromiseRef.current = null; }
-    if (mediaStreamRef.current) { mediaStreamRef.current.getTracks().forEach(t => t.stop()); mediaStreamRef.current = null; }
-    if (inputContextRef.current) { inputContextRef.current.close(); inputContextRef.current = null; }
-    if (outputContextRef.current) { outputContextRef.current.close(); outputContextRef.current = null; }
-    audioSources.current.forEach(s => { try { s.stop(); } catch(e) {} }); audioSources.current.clear();
-    setConnectionState(ConnectionState.DISCONNECTED);
-    setIsSpeaking(false); setIsProcessing(false); setVolumeLevel(0);
+  // --- VOICE LOGIC (BROWSER NATIVE) ---
+  const speakText = (text: string) => {
+    if (!synthRef.current) return;
+    synthRef.current.cancel();
+
+    const utterance = new SpeechSynthesisUtterance(text);
+    // Try to find a good voice
+    const voices = synthRef.current.getVoices();
+    const preferredVoice = voices.find(v => v.name.includes("Google US English") || v.name.includes("Samantha")) || voices[0];
+    if (preferredVoice) utterance.voice = preferredVoice;
+    
+    utterance.onstart = () => { setIsSpeaking(true); setVolumeLevel(0.8); };
+    utterance.onend = () => { setIsSpeaking(false); setVolumeLevel(0); };
+    utterance.onerror = () => { setIsSpeaking(false); };
+    
+    synthRef.current.speak(utterance);
+  };
+
+  const startListening = useCallback(async () => {
+    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
+    if (!SpeechRecognition) {
+        alert("Voice not supported in this browser. Please use Chrome.");
+        return;
+    }
+
+    const recognition = new SpeechRecognition();
+    recognition.lang = 'en-US'; // Can be dynamic based on preference
+    recognition.continuous = false;
+    recognition.interimResults = false;
+
+    recognition.onstart = () => {
+        setConnectionState(ConnectionState.CONNECTED);
+        setVolumeLevel(0.5); // Simulate mic activity
+    };
+
+    recognition.onend = () => {
+        setConnectionState(ConnectionState.DISCONNECTED);
+        setVolumeLevel(0);
+    };
+
+    recognition.onresult = (event: any) => {
+        const transcript = event.results[0][0].transcript;
+        if (transcript) {
+            sendTextMessage(transcript);
+        }
+    };
+
+    recognition.onerror = (event: any) => {
+        console.error("Speech error", event.error);
+        setConnectionState(ConnectionState.DISCONNECTED);
+    };
+
+    recognitionRef.current = recognition;
+    recognition.start();
   }, []);
 
   const connect = useCallback(async () => {
-    const apiKey = getApiKey();
-    let currentSessionId = activeSessionId;
-    if (!currentSessionId) currentSessionId = await createNewChat();
-    if (!user) return "LOGIN_REQUIRED"; 
-    
-    disconnect(); 
-    setConnectionState(ConnectionState.CONNECTING);
-    
-    let stream: MediaStream;
-    try {
-      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
-      mediaStreamRef.current = stream;
-    } catch (e: any) { 
-        disconnect();
-        if (currentSessionId) addMessage('model', "Microphone access denied.", 'text', undefined, currentSessionId);
-        setConnectionState(ConnectionState.DISCONNECTED);
-        return; 
-    }
+      if (!user) return "LOGIN_REQUIRED";
+      startListening();
+      return "SUCCESS";
+  }, [user, startListening]);
 
-    let inputCtx: AudioContext;
-    let outputCtx: AudioContext;
-    try {
-        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
-        inputCtx = new AudioContextClass({ sampleRate: 16000 });
-        outputCtx = new AudioContextClass({ sampleRate: 24000 });
-        inputContextRef.current = inputCtx;
-        outputContextRef.current = outputCtx;
-    } catch (e) { disconnect(); return; }
+  const disconnect = useCallback(() => {
+     if (recognitionRef.current) {
+         recognitionRef.current.stop();
+     }
+     if (synthRef.current) {
+         synthRef.current.cancel();
+     }
+     setConnectionState(ConnectionState.DISCONNECTED);
+     setIsSpeaking(false);
+  }, []);
 
-    try {
-      const ai = new GoogleGenAI({ apiKey });
-      const sessionPromise = ai.live.connect({
-        model: 'gemini-2.5-flash-native-audio-preview-12-2025',
-        config: {
-          responseModalities: [Modality.AUDIO],
-          systemInstruction: getSystemInstruction(),
-          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
-          tools: [{ googleSearch: {} }], 
-        },
-        callbacks: {
-          onopen: () => {
-            setConnectionState(ConnectionState.CONNECTED);
-            const source = inputCtx.createMediaStreamSource(stream);
-            const processor = inputCtx.createScriptProcessor(4096, 1, 1);
-            processor.onaudioprocess = (e) => {
-              if (isSpeakingRef.current) return;
-              const inputData = e.inputBuffer.getChannelData(0);
-              let sum = 0; for(let i=0; i<inputData.length; i++) sum += inputData[i] * inputData[i];
-              setVolumeLevel(Math.min(Math.sqrt(sum / inputData.length) * 10, 1)); 
-              sessionPromise.then(s => s.sendRealtimeInput({ media: createAudioBlob(inputData) })).catch(() => {});
-            };
-            source.connect(processor); processor.connect(inputCtx.destination);
-          },
-          onmessage: async (msg: LiveServerMessage) => {
-            if (msg.serverContent?.interrupted) {
-              audioSources.current.forEach(s => s.stop()); audioSources.current.clear();
-              nextStartTimeRef.current = 0; setIsSpeaking(false); transcriptionRef.current = { user: '', model: '' };
-            }
-            if (msg.serverContent?.inputTranscription?.text) transcriptionRef.current.user += msg.serverContent.inputTranscription.text;
-            if (msg.serverContent?.outputTranscription?.text) transcriptionRef.current.model += msg.serverContent.outputTranscription.text;
-            if (msg.serverContent?.turnComplete) {
-              const { user: tUser, model: tModel } = transcriptionRef.current;
-              if (tUser.trim()) addMessage('user', tUser, 'text', undefined, currentSessionId!);
-              if (tModel.trim()) addMessage('model', tModel, 'text', undefined, currentSessionId!);
-              transcriptionRef.current = { user: '', model: '' };
-            }
-            const base64Audio = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
-            if (base64Audio) {
-              setIsSpeaking(true);
-              const audioBuffer = await decodeAudioData(decode(base64Audio), outputCtx, 24000, 1);
-              const source = outputCtx.createBufferSource();
-              source.buffer = audioBuffer;
-              source.connect(outputCtx.destination);
-              const start = Math.max(nextStartTimeRef.current, outputCtx.currentTime);
-              source.start(start);
-              nextStartTimeRef.current = start + audioBuffer.duration;
-              audioSources.current.add(source);
-              source.onended = () => { audioSources.current.delete(source); if (audioSources.current.size === 0) setIsSpeaking(false); };
-            }
-          },
-          onclose: () => { setConnectionState(ConnectionState.DISCONNECTED); setIsSpeaking(false); },
-          onerror: (err: any) => { setConnectionState(ConnectionState.DISCONNECTED); }
-        }
-      });
-      sessionPromiseRef.current = sessionPromise;
-      sessionPromise.catch((e: any) => { disconnect(); if(currentSessionId) addMessage('model', formatErrorMessage(e), 'text', undefined, currentSessionId); });
-    } catch (e: any) { disconnect(); if(currentSessionId) addMessage('model', formatErrorMessage(e), 'text', undefined, currentSessionId); }
-  }, [addMessage, activeSessionId, createNewChat, updateMessage, disconnect, user]);
-
+  // --- OPENROUTER CHAT LOGIC ---
   const sendTextMessage = useCallback(async (text: string, imageData?: { data: string, mimeType: string }) => {
     const apiKey = getApiKey();
     let targetSessionId = activeSessionId;
@@ -362,11 +282,11 @@ export const useWAI = () => {
 
     if (!text.trim() && !imageData) return;
 
-    addMessage('user', text || "Content Analysis", 'text', undefined, targetSessionId);
+    addMessage('user', text || "Image Analysis", 'text', undefined, targetSessionId);
     
     // Check if user asked for image
-    if (/(?:create|generate|draw|design|make).*(?:image|picture|logo|art|animation)/i.test(text)) {
-        try { await handleImageGen(text, targetSessionId); } catch(e) { addMessage('model', formatErrorMessage(e), 'text', undefined, targetSessionId); } finally { setIsProcessing(false); }
+    if (/(?:create|generate|draw|design|make).*(?:image|picture|logo|art|animation|photo)/i.test(text)) {
+        handleImageGen(text, targetSessionId);
         return;
     }
 
@@ -374,55 +294,64 @@ export const useWAI = () => {
     const streamId = generateUUID();
     addMessage('model', '', 'text', undefined, targetSessionId, streamId);
 
-    // --- SMART RETRY LOGIC ---
-    // Try 1: Standard model WITH Tools (Search)
-    // Try 2: Standard model WITHOUT Tools (If Try 1 fails, likely due to search permission)
-    // Try 3: Fallback models (Economy)
-    
-    const attempts = [
-        { model: 'gemini-2.5-flash-latest', useTools: true },
-        { model: 'gemini-2.5-flash-latest', useTools: false },
-        { model: 'gemini-flash-lite-latest', useTools: false }
-    ];
-
-    for (const attempt of attempts) {
-        try {
-            const ai = new GoogleGenAI({ apiKey });
-            const contents: any[] = [{ role: 'user', parts: [{ text }] }];
-            if (imageData) contents[0].parts.push({ inlineData: { data: imageData.data, mimeType: imageData.mimeType } });
-
-            let config: any = { systemInstruction: getSystemInstruction() };
-            
-            // Only add tools if requested
-            if (attempt.useTools) {
-                config.tools = [{ googleSearch: {} }];
-            }
-
-            const result = await ai.models.generateContentStream({ model: attempt.model, contents, config });
-            let accumulatedText = '';
-            let sources: GroundingSource[] = [];
-            // @ts-ignore
-            const stream = result.stream || result;
-
-            for await (const chunk of stream) {
-                if (chunk.text) { accumulatedText += chunk.text; updateMessage(targetSessionId, streamId, { content: accumulatedText }); }
-                const gChunks = chunk.candidates?.[0]?.groundingMetadata?.groundingChunks;
-                if (gChunks) sources.push(...gChunks.filter((c: any) => c.web?.uri && c.web?.title).map((c: any) => ({ title: c.web.title, uri: c.web.uri })));
-            }
-            updateMessage(targetSessionId, streamId, { content: accumulatedText, sources: sources.length > 0 ? sources : undefined });
-            persistMessageUpdate(streamId, { content: accumulatedText, sources: sources.length > 0 ? sources : undefined });
-            setIsProcessing(false);
-            return; // SUCCESS - Exit function
-        } catch(e: any) {
-            console.warn(`Attempt with ${attempt.model} (Tools: ${attempt.useTools}) failed.`);
-            // Only show error if ALL attempts fail
-            if (attempts.indexOf(attempt) === attempts.length - 1) {
-                updateMessage(targetSessionId, streamId, { content: formatErrorMessage(e) });
-            }
+    try {
+        // Construct History for Context
+        const currentSession = sessions.find(s => s.id === targetSessionId);
+        const history = currentSession ? currentSession.messages.map(m => ({
+            role: m.role === 'model' ? 'assistant' : 'user',
+            content: m.content
+        })) : [];
+        
+        // Add current message if not in history yet
+        if (history.length === 0 || history[history.length - 1].content !== text) {
+             history.push({ role: 'user', content: text });
         }
+
+        // Add System Prompt
+        history.unshift({ role: 'system', content: getSystemInstruction() });
+
+        // Using standard fetch for OpenRouter
+        const response = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
+            headers: {
+                "Authorization": `Bearer ${apiKey}`,
+                "HTTP-Referer": window.location.origin, // Required by OpenRouter
+                "X-Title": "Keshra AI", // Required by OpenRouter
+                "Content-Type": "application/json"
+            },
+            body: JSON.stringify({
+                // Using the requested high-intelligence free model
+                model: "meta-llama/llama-3.3-70b-instruct:free",
+                messages: history,
+                temperature: 0.7,
+                max_tokens: 1000,
+            })
+        });
+
+        if (!response.ok) {
+            throw new Error(`API Error: ${response.statusText}`);
+        }
+
+        const data = await response.json();
+        const reply = data.choices[0]?.message?.content || "No response.";
+        
+        updateMessage(targetSessionId, streamId, { content: reply });
+        persistMessageUpdate(streamId, { content: reply });
+        
+        // Speak response if in voice mode (simulated by checking if we just used voice, 
+        // but for now we just speak if the response is short enough or user requested)
+        if (connectionState === ConnectionState.CONNECTED) {
+            speakText(reply);
+        }
+
+    } catch(e: any) {
+        console.error("OpenRouter Error:", e);
+        updateMessage(targetSessionId, streamId, { content: "⚠️ System Update: Reconnecting to Neural Network... (Please try again)" });
+    } finally {
+        setIsProcessing(false);
     }
-    setIsProcessing(false);
-  }, [user, activeSessionId, createNewChat, addMessage, updateMessage, chatMode, persistMessageUpdate]); 
+
+  }, [user, activeSessionId, createNewChat, addMessage, updateMessage, sessions, persistMessageUpdate, connectionState]); 
 
   return { 
     messages: sessions.find(s => s.id === activeSessionId)?.messages || [], sessions, activeSessionId, setActiveSessionId, createNewChat, resetChat, deleteSession,
