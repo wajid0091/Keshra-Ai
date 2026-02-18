@@ -511,7 +511,7 @@ const App: React.FC = () => {
                    
                    <div className="grid grid-cols-2 md:grid-cols-4 gap-4 w-full max-w-2xl px-4">
                      {[
-                       { icon: <ImageIcon className="w-5 h-5 text-orange-500" />, label: 'Create image', prompt: 'Ultra realistic 8K cinematic night photography of Peshawar, Pakistan, historic Islamic architecture illuminated in golden lights, crescent moon shining in starry sky, lively bazaar streets, glowing market stalls, soft depth of field, bokeh lights, aerial wide angle view, dramatic shadows, professional DSLR photography, hyper detailed, masterpiece' },
+                       { icon: <ImageIcon className="w-5 h-5 text-orange-500" />, label: 'Create image', prompt: 'Create Image Ultra realistic 8K cinematic night photography of Peshawar, Pakistan, historic Islamic architecture illuminated in golden lights, crescent moon shining in starry sky, lively bazaar streets, glowing market stalls, soft depth of field, bokeh lights, aerial wide angle view, dramatic shadows, professional DSLR photography, hyper detailed, masterpiece' },
                        { icon: <Search className="w-5 h-5 text-cyan-500" />, label: 'Latest News', prompt: 'What are the latest tech news headlines today?' },
                        { icon: <Lightbulb className="w-5 h-5 text-yellow-500" />, label: 'Get advice', prompt: 'How can a developer stay updated with new tech trends?' },
                        { icon: <BarChart className="w-5 h-5 text-green-500" />, label: 'Analyze data', prompt: 'Explain the best way to handle large datasets using Python.' },
