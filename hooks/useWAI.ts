@@ -1,6 +1,8 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import { ConnectionState, Message, GroundingSource, ChatSession, ChatMode } from '../types';
 import { supabase } from '../lib/supabase';
+import { GoogleGenAI, Modality, LiveServerMessage } from '@google/genai';
+import { createAudioBlob, decode, decodeAudioData } from '../utils/audioUtils';
 
 // --- UTILITIES ---
 const generateUUID = () => {
@@ -14,21 +16,21 @@ const generateUUID = () => {
 };
 
 // --- API KEY STRATEGY ---
-const getApiKey = (): string | null => {
-  // 1. Try Vite Env (Most reliable for this setup)
+const getOpenRouterKey = (): string | null => {
   // @ts-ignore
   if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_OPENROUTER_API_KEY) {
       // @ts-ignore
       return import.meta.env.VITE_OPENROUTER_API_KEY;
   }
-  
-  // 2. Try Process Env (Fallback)
-  // @ts-ignore
-  if (typeof process !== 'undefined' && process.env && process.env.VITE_OPENROUTER_API_KEY) {
-      // @ts-ignore
-      return process.env.VITE_OPENROUTER_API_KEY;
-  }
+  return null;
+};
 
+const getGeminiKey = (): string | null => {
+  // @ts-ignore
+  if (typeof import.meta !== 'undefined' && import.meta.env && import.meta.env.VITE_GEMINI_API_KEY) {
+      // @ts-ignore
+      return import.meta.env.VITE_GEMINI_API_KEY;
+  }
   return null;
 };
 
@@ -41,15 +43,18 @@ Current Time: ${new Date().toLocaleString()}.
 2. **Creator:** Wajid Ali (Peshawar).
 3. **Model Integrity:** You must NEVER mention you are Llama, Qwen, Nvidia or any other model. You are Keshra AI.
 4. **Behavior:** Be helpful, intelligent, and respectful.
-5. **Language:** If the user speaks Urdu/Pashto, reply in that language.
+5. **Language Priority:** 
+   - If user speaks/types in URDU, reply in URDU.
+   - If user speaks/types in PASHTO, reply in PASHTO.
+   - If user speaks/types in ENGLISH, reply in ENGLISH.
 6. **Donation:** If the user is appreciative, gently mention you are a free tool supported by the community and they can use the "Support Keshra" button.
 `;
 
-// Priority List of Models
+// Priority List of Models (Qwen prioritized for Urdu)
 const MODELS = [
+  "qwen/qwen3-next-80b-a3b-instruct:free", // Best for Urdu/Pashto
   "meta-llama/llama-3.3-70b-instruct:free",
-  "nvidia/nemotron-3-nano-30b-a3b:free",
-  "qwen/qwen3-next-80b-a3b-instruct:free"
+  "nvidia/nemotron-3-nano-30b-a3b:free"
 ];
 
 export const useWAI = () => {
@@ -65,10 +70,16 @@ export const useWAI = () => {
   const [volumeLevel, setVolumeLevel] = useState(0);
   const [chatMode, setChatMode] = useState<ChatMode>('normal');
 
-  // Speech Recognition Refs
-  const recognitionRef = useRef<any>(null);
-  const synthRef = useRef<SpeechSynthesis>(window.speechSynthesis);
-  const isIntentionalStop = useRef(false);
+  // Voice (Gemini Live) Refs
+  const isSpeakingRef = useRef(false);
+  const sessionPromiseRef = useRef<Promise<any> | null>(null);
+  const nextStartTimeRef = useRef<number>(0);
+  const audioSources = useRef<Set<AudioBufferSourceNode>>(new Set());
+  const inputContextRef = useRef<AudioContext | null>(null);
+  const outputContextRef = useRef<AudioContext | null>(null);
+  const mediaStreamRef = useRef<MediaStream | null>(null);
+
+  useEffect(() => { isSpeakingRef.current = isSpeaking; }, [isSpeaking]);
 
   // Auth
   useEffect(() => {
@@ -192,11 +203,12 @@ export const useWAI = () => {
     
     try {
         const seed = Math.floor(Math.random() * 1000000);
+        // Using Pollinations because provided OpenRouter models are Text-Only. 
+        // This is the most reliable way to get an image.
         const encodedPrompt = encodeURIComponent(prompt + " . cinematic, 8k, photorealistic, high quality, highly detailed");
         const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?nologo=true&private=true&enhanced=true&model=flux&seed=${seed}`;
         
-        // Short delay for UX
-        await new Promise(resolve => setTimeout(resolve, 2000));
+        await new Promise(resolve => setTimeout(resolve, 2000)); // UX Delay
 
         updateMessage(sessionId, placeholderId, { type: 'image', content: imageUrl });
         persistMessageUpdate(placeholderId, { type: 'image', content: imageUrl });
@@ -207,114 +219,119 @@ export const useWAI = () => {
     }
   };
 
-  // --- VOICE LOGIC (BROWSER NATIVE) ---
-  const speakText = (text: string) => {
-    if (!synthRef.current) return;
-    synthRef.current.cancel();
-
-    // Remove markdown symbols for cleaner speech
-    const cleanText = text.replace(/\*/g, '').replace(/#/g, '').replace(/`/g, '');
-    const utterance = new SpeechSynthesisUtterance(cleanText);
-    
-    const voices = synthRef.current.getVoices();
-    // Prioritize high quality English voices or fallback
-    const preferredVoice = voices.find(v => v.name.includes("Google US English") || v.name.includes("Samantha")) || voices[0];
-    if (preferredVoice) utterance.voice = preferredVoice;
-    
-    utterance.onstart = () => { setIsSpeaking(true); setVolumeLevel(0.8); };
-    utterance.onend = () => { setIsSpeaking(false); setVolumeLevel(0); };
-    utterance.onerror = () => { setIsSpeaking(false); };
-    
-    synthRef.current.speak(utterance);
-  };
-
-  const startListening = useCallback(async () => {
-    const SpeechRecognition = (window as any).SpeechRecognition || (window as any).webkitSpeechRecognition;
-    if (!SpeechRecognition) {
-        alert("Voice not supported in this browser. Please use Chrome.");
-        return;
-    }
-
-    const recognition = new SpeechRecognition();
-    recognition.lang = 'en-US'; 
-    recognition.continuous = false; // We restart manually to avoid timeout issues
-    recognition.interimResults = false;
-
-    recognition.onstart = () => {
-        setConnectionState(ConnectionState.CONNECTED);
-        setVolumeLevel(0.5); 
-    };
-
-    recognition.onend = () => {
-        // Auto-restart if it wasn't an intentional stop
-        if (!isIntentionalStop.current && connectionState === ConnectionState.CONNECTED) {
-            try {
-                recognition.start();
-            } catch (e) {
-                setConnectionState(ConnectionState.DISCONNECTED);
-                setVolumeLevel(0);
-            }
-        } else {
-            setConnectionState(ConnectionState.DISCONNECTED);
-            setVolumeLevel(0);
-        }
-    };
-
-    recognition.onresult = (event: any) => {
-        const transcript = event.results[0][0].transcript;
-        if (transcript) {
-            sendTextMessage(transcript);
-        }
-    };
-
-    recognition.onerror = (event: any) => {
-        console.error("Speech error", event.error);
-        if (event.error === 'not-allowed') {
-            isIntentionalStop.current = true;
-            setConnectionState(ConnectionState.DISCONNECTED);
-        }
-    };
-
-    recognitionRef.current = recognition;
-    isIntentionalStop.current = false;
-    recognition.start();
-  }, [connectionState]);
+  // --- VOICE LOGIC (GEMINI LIVE API) ---
+  const disconnect = useCallback(() => {
+    if (sessionPromiseRef.current) { sessionPromiseRef.current.then(s => s.close()).catch(() => {}); sessionPromiseRef.current = null; }
+    if (mediaStreamRef.current) { mediaStreamRef.current.getTracks().forEach(t => t.stop()); mediaStreamRef.current = null; }
+    if (inputContextRef.current) { inputContextRef.current.close(); inputContextRef.current = null; }
+    if (outputContextRef.current) { outputContextRef.current.close(); outputContextRef.current = null; }
+    audioSources.current.forEach(s => { try { s.stop(); } catch(e) {} }); audioSources.current.clear();
+    setConnectionState(ConnectionState.DISCONNECTED);
+    setIsSpeaking(false); setIsProcessing(false); setVolumeLevel(0);
+  }, []);
 
   const connect = useCallback(async () => {
-      if (!user) return "LOGIN_REQUIRED";
-      startListening();
-      return "SUCCESS";
-  }, [user, startListening]);
+    const geminiKey = getGeminiKey();
+    if (!geminiKey) {
+        alert("Configuration Error: VITE_GEMINI_API_KEY is missing for Voice Mode.");
+        return;
+    }
+    
+    let currentSessionId = activeSessionId;
+    if (!currentSessionId) currentSessionId = await createNewChat();
+    if (!user) return "LOGIN_REQUIRED"; 
+    
+    disconnect(); 
+    setConnectionState(ConnectionState.CONNECTING);
+    
+    let stream: MediaStream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
+      mediaStreamRef.current = stream;
+    } catch (e: any) { 
+        disconnect();
+        setConnectionState(ConnectionState.DISCONNECTED);
+        return; 
+    }
 
-  const disconnect = useCallback(() => {
-     isIntentionalStop.current = true;
-     if (recognitionRef.current) {
-         recognitionRef.current.stop();
-     }
-     if (synthRef.current) {
-         synthRef.current.cancel();
-     }
-     setConnectionState(ConnectionState.DISCONNECTED);
-     setIsSpeaking(false);
-  }, []);
+    let inputCtx: AudioContext;
+    let outputCtx: AudioContext;
+    try {
+        const AudioContextClass = window.AudioContext || (window as any).webkitAudioContext;
+        inputCtx = new AudioContextClass({ sampleRate: 16000 });
+        outputCtx = new AudioContextClass({ sampleRate: 24000 });
+        inputContextRef.current = inputCtx;
+        outputContextRef.current = outputCtx;
+    } catch (e) { disconnect(); return; }
+
+    try {
+      const ai = new GoogleGenAI({ apiKey: geminiKey });
+      const sessionPromise = ai.live.connect({
+        model: 'gemini-2.5-flash-native-audio-preview-12-2025',
+        config: {
+          responseModalities: [Modality.AUDIO],
+          systemInstruction: getSystemInstruction(),
+          speechConfig: { voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } } },
+        },
+        callbacks: {
+          onopen: () => {
+            setConnectionState(ConnectionState.CONNECTED);
+            const source = inputCtx.createMediaStreamSource(stream);
+            const processor = inputCtx.createScriptProcessor(4096, 1, 1);
+            processor.onaudioprocess = (e) => {
+              if (isSpeakingRef.current) return;
+              const inputData = e.inputBuffer.getChannelData(0);
+              let sum = 0; for(let i=0; i<inputData.length; i++) sum += inputData[i] * inputData[i];
+              setVolumeLevel(Math.min(Math.sqrt(sum / inputData.length) * 10, 1)); 
+              sessionPromise.then(s => s.sendRealtimeInput({ media: createAudioBlob(inputData) })).catch(() => {});
+            };
+            source.connect(processor); processor.connect(inputCtx.destination);
+          },
+          onmessage: async (msg: LiveServerMessage) => {
+            if (msg.serverContent?.interrupted) {
+              audioSources.current.forEach(s => s.stop()); audioSources.current.clear();
+              nextStartTimeRef.current = 0; setIsSpeaking(false);
+            }
+            const base64Audio = msg.serverContent?.modelTurn?.parts?.[0]?.inlineData?.data;
+            if (base64Audio) {
+              setIsSpeaking(true);
+              const audioBuffer = await decodeAudioData(decode(base64Audio), outputCtx, 24000, 1);
+              const source = outputCtx.createBufferSource();
+              source.buffer = audioBuffer;
+              source.connect(outputCtx.destination);
+              const start = Math.max(nextStartTimeRef.current, outputCtx.currentTime);
+              source.start(start);
+              nextStartTimeRef.current = start + audioBuffer.duration;
+              audioSources.current.add(source);
+              source.onended = () => { audioSources.current.delete(source); if (audioSources.current.size === 0) setIsSpeaking(false); };
+            }
+          },
+          onclose: () => { setConnectionState(ConnectionState.DISCONNECTED); setIsSpeaking(false); },
+          onerror: (err: any) => { setConnectionState(ConnectionState.DISCONNECTED); }
+        }
+      });
+      sessionPromiseRef.current = sessionPromise;
+      sessionPromise.catch((e: any) => { disconnect(); });
+    } catch (e: any) { disconnect(); }
+  }, [activeSessionId, createNewChat, disconnect, user]);
 
   // --- OPENROUTER CHAT LOGIC (MULTI-MODEL FALLBACK) ---
   const sendTextMessage = useCallback(async (text: string, imageData?: { data: string, mimeType: string }) => {
-    const apiKey = getApiKey();
+    const apiKey = getOpenRouterKey();
     let targetSessionId = activeSessionId;
     if (!targetSessionId) { targetSessionId = await createNewChat(); if (!targetSessionId) return; }
 
     if (!text.trim() && !imageData) return;
 
-    // Check for missing API Key immediately
     if (!apiKey) {
-        addMessage('model', "⚠️ Configuration Error: API Key is missing. Please set VITE_OPENROUTER_API_KEY in your environment variables.", 'text', undefined, targetSessionId);
+        addMessage('model', "⚠️ Configuration Error: VITE_OPENROUTER_API_KEY is missing.", 'text', undefined, targetSessionId);
         return;
     }
 
     addMessage('user', text || "Image Analysis", 'text', undefined, targetSessionId);
     
-    if (/(?:create|generate|draw|design|make).*(?:image|picture|logo|art|animation|photo)/i.test(text)) {
+    // Intelligent Image Intent Detection
+    if (/(?:create|generate|draw|design|make|render).*(?:image|picture|logo|art|animation|photo)/i.test(text)) {
         handleImageGen(text, targetSessionId);
         return;
     }
@@ -363,14 +380,10 @@ export const useWAI = () => {
                     reply = data.choices[0]?.message?.content;
                     if (reply) {
                         success = true;
-                        break; // Exit loop on success
+                        break; 
                     }
-                } else {
-                    console.warn(`Model ${model} failed with status ${response.status}`);
                 }
-            } catch (err) {
-                console.warn(`Model ${model} network error`, err);
-            }
+            } catch (err) {}
         }
 
         if (!success || !reply) {
@@ -379,14 +392,9 @@ export const useWAI = () => {
 
         updateMessage(targetSessionId, streamId, { content: reply });
         persistMessageUpdate(streamId, { content: reply });
-        
-        if (connectionState === ConnectionState.CONNECTED) {
-            speakText(reply);
-        }
 
     } catch(e: any) {
-        console.error("OpenRouter Final Error:", e);
-        updateMessage(targetSessionId, streamId, { content: "⚠️ Keshra Server Busy: I am currently experiencing high traffic. Please try again in a few seconds." });
+        updateMessage(targetSessionId, streamId, { content: "⚠️ System Busy: Please try again in a moment." });
     } finally {
         setIsProcessing(false);
     }

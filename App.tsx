@@ -7,8 +7,8 @@ import {
   Mic, Send, Search, Image as ImageIcon, Sparkles, 
   Plus, MessageSquare, Trash2, Menu, X, 
   Moon, Sun, Copy, Check, Download, Paperclip, Loader2,
-  FileText, Lightbulb, BarChart, ExternalLink, Zap, Brain, Globe, ChevronUp,
-  ThumbsUp, ThumbsDown, LogOut, Lock, User, Mail, Heart, CreditCard, Coins
+  FileText, Lightbulb, BarChart, ExternalLink, Globe, ChevronUp,
+  ThumbsUp, ThumbsDown, LogOut, Lock, Mail, Heart, CreditCard, Coins, Brain
 } from 'lucide-react';
 
 // --- Dedicated CodeBlock Component ---
@@ -87,7 +87,6 @@ const DonationModal = ({ onClose }: { onClose: () => void }) => {
         </div>
 
         <div className="space-y-4">
-          {/* Easypaisa */}
           <div className="p-4 rounded-xl bg-[#1e1e1e] border border-white/10 hover:border-green-500/50 transition-colors group">
              <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
@@ -105,7 +104,6 @@ const DonationModal = ({ onClose }: { onClose: () => void }) => {
              </div>
           </div>
 
-          {/* SadaPay */}
           <div className="p-4 rounded-xl bg-[#1e1e1e] border border-white/10 hover:border-teal-500/50 transition-colors group">
              <div className="flex items-center justify-between mb-2">
                 <div className="flex items-center gap-2">
@@ -123,8 +121,6 @@ const DonationModal = ({ onClose }: { onClose: () => void }) => {
              </div>
           </div>
         </div>
-
-        <p className="text-center text-[10px] text-slate-500 mt-6 uppercase tracking-widest font-bold">Secure • Trusted • Pakistani</p>
       </div>
     </div>
   );
@@ -170,7 +166,7 @@ const AuthModal = ({ onClose, defaultMode = 'login' }: { onClose: () => void, de
   const handleGoogleLogin = async () => {
       const { error } = await supabase.auth.signInWithOAuth({ 
           provider: 'google',
-          options: { redirectTo: window.location.origin }
+          options: { redirectTo: 'https://ufnfklvbivzlicpzmwhp.supabase.co/auth/v1/callback' }
       });
       if (error) setError(error.message);
   }
@@ -295,7 +291,7 @@ const App: React.FC = () => {
   const handleGoogleLogin = async () => {
       const { error } = await supabase.auth.signInWithOAuth({ 
           provider: 'google',
-          options: { redirectTo: window.location.origin }
+          options: { redirectTo: 'https://ufnfklvbivzlicpzmwhp.supabase.co/auth/v1/callback' }
       });
       if (error) alert(error.message);
   };
