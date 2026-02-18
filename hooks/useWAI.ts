@@ -15,26 +15,32 @@ const generateUUID = () => {
     });
 };
 
-// --- ULTRA ROBUST API KEY LOADING FOR NETLIFY/VITE ---
+// --- STRICT API KEY LOADING ---
+// We use dot notation specifically so bundlers (Vite/Webpack) can replace the whole expression with the string value.
 const getApiKey = (): string => {
-  // 1. Try Standard Vite Environment (import.meta.env)
-  // Check for 'API_KEY' specifically as requested
+  // 1. Try process.env.API_KEY (Standard for many build tools)
   // @ts-ignore
-  if (import.meta.env?.API_KEY) return import.meta.env.API_KEY;
-  // @ts-ignore
-  if (import.meta.env?.VITE_API_KEY) return import.meta.env.VITE_API_KEY;
+  if (typeof process !== 'undefined' && process.env && process.env.API_KEY) {
+      // @ts-ignore
+      return process.env.API_KEY;
+  }
   
-  // 2. Try Process Environment (Standard Node/Build injection)
-  if (typeof process !== 'undefined' && process.env) {
-    if (process.env.API_KEY) return process.env.API_KEY;
-    if (process.env.VITE_API_KEY) return process.env.VITE_API_KEY;
-    // @ts-ignore
-    if (process.env.REACT_APP_API_KEY) return process.env.REACT_APP_API_KEY;
+  // 2. Try import.meta.env.API_KEY (Standard Vite)
+  // @ts-ignore
+  if (import.meta && import.meta.env && import.meta.env.API_KEY) {
+      // @ts-ignore
+      return import.meta.env.API_KEY;
   }
 
-  // 3. Try Global Window Objects (Runtime Injection)
+  // 3. Fallbacks for prefixed variables (Common in Vite/React apps)
+  // @ts-ignore
+  if (import.meta && import.meta.env && import.meta.env.VITE_API_KEY) {
+      // @ts-ignore
+      return import.meta.env.VITE_API_KEY;
+  }
+  
+  // 4. Global fallback
   if ((window as any).API_KEY) return (window as any).API_KEY;
-  if ((window as any).process?.env?.API_KEY) return (window as any).process.env.API_KEY;
 
   return "";
 };
@@ -71,10 +77,10 @@ const formatErrorMessage = (error: any): string => {
   const lowerMsg = msg.toLowerCase();
   
   if (lowerMsg.includes('api key') || lowerMsg.includes('400') || lowerMsg.includes('unauthenticated')) {
-      return "⚠️ System Error: Authentication failed. Please check environment configuration.";
+      return "⚠️ System Error: Authentication failed. API Key not found or invalid.";
   }
-  if (lowerMsg.includes('429') || lowerMsg.includes('resource_exhausted') || lowerMsg.includes('quota')) {
-      return "⚠️ Capacity reached. Switching to backup systems...";
+  if (lowerMsg.includes('429') || lowerMsg.includes('resource_exhausted') || lowerMsg.includes('quota') || lowerMsg.includes('limit')) {
+      return "⚠️ High Traffic: Switching to backup model...";
   }
   if (lowerMsg.includes('fetch') || lowerMsg.includes('network')) return "⚠️ Network error. Check your connection.";
   
@@ -227,14 +233,14 @@ export const useWAI = () => {
     setIsProcessing(true);
     const apiKey = getApiKey();
     if (!apiKey) {
-        updateMessage(sessionId, placeholderId, { type: 'text', content: "⚠️ API Key not found. Please check Netlify configuration." });
+        updateMessage(sessionId, placeholderId, { type: 'text', content: "⚠️ System Error: API Key not found. Please check Netlify environment variables." });
         setIsProcessing(false);
         return;
     }
     const ai = new GoogleGenAI({ apiKey });
     const enhancedPrompt = `${prompt} . High quality, detailed, photorealistic, 8k.`;
 
-    // FALLBACK CHAIN: Pro -> Flash -> Imagen
+    // FALLBACK CHAIN: Pro (High Quality) -> Flash (Fast) -> Imagen (Backup)
     const modelsToTry = ['gemini-3-pro-image-preview', 'gemini-2.5-flash-image'];
 
     for (const model of modelsToTry) {
@@ -250,7 +256,10 @@ export const useWAI = () => {
                     }
                 }
             }
-        } catch (e) { console.warn(`${model} failed, failing over...`); }
+        } catch (e) { 
+          console.warn(`${model} failed, trying next...`);
+          // Continue to next model in loop
+        }
     }
     
     // Final Fallback: Imagen
@@ -263,7 +272,7 @@ export const useWAI = () => {
             return;
         }
     } catch (e: any) {
-        updateMessage(sessionId, placeholderId, { type: 'text', content: "Unable to generate image at this time. All models busy." });
+        updateMessage(sessionId, placeholderId, { type: 'text', content: "Unable to generate image. All AI models are currently busy or reached capacity." });
     }
     setIsProcessing(false);
   };
@@ -284,10 +293,10 @@ export const useWAI = () => {
     if (!currentSessionId) currentSessionId = await createNewChat();
     if (!user) return "LOGIN_REQUIRED"; 
     
-    // Allow connection attempt even if key check is ambiguous to support "magic" environment injections
+    // STRICT CHECK: Ensure key exists before attempting connection
     if (!apiKey) {
-        // Log locally but attempt anyway in case of hidden proxy, but likely will fail inside SDK
-        console.warn("API Key not detected explicitly, attempting connection...");
+        if (currentSessionId) addMessage('model', "⚠️ System Error: API Key is missing. Cannot start voice mode.", 'text', undefined, currentSessionId);
+        return;
     }
 
     disconnect(); 
@@ -315,7 +324,7 @@ export const useWAI = () => {
     } catch (e) { disconnect(); return; }
 
     try {
-      const ai = new GoogleGenAI({ apiKey: apiKey || 'dummy' }); // SDK requires string
+      const ai = new GoogleGenAI({ apiKey });
       const sessionPromise = ai.live.connect({
         model: 'gemini-2.5-flash-native-audio-preview-12-2025',
         config: {
@@ -376,7 +385,11 @@ export const useWAI = () => {
 
   const sendTextMessage = useCallback(async (text: string, imageData?: { data: string, mimeType: string }) => {
     const apiKey = getApiKey();
-    if (!apiKey) { alert("API Key not found in environment."); return; }
+    if (!apiKey) { 
+        let targetSessionId = activeSessionId || await createNewChat();
+        if (targetSessionId) addMessage('model', "⚠️ System Error: API Key not found.", 'text', undefined, targetSessionId);
+        return; 
+    }
     if (!text.trim() && !imageData) return;
 
     let targetSessionId = activeSessionId;
@@ -394,7 +407,10 @@ export const useWAI = () => {
     const streamId = generateUUID();
     addMessage('model', '', 'text', undefined, targetSessionId, streamId);
 
-    // FALLBACK CHAIN: 3.0 Flash -> 2.5 Flash -> Flash Lite
+    // ROBUST FALLBACK CHAIN FOR CHAT
+    // 1. Gemini 3 Flash (Fast & Smart)
+    // 2. Gemini 2.5 Flash (Reliable Standard)
+    // 3. Gemini Flash Lite (Low Cost / Backup)
     const models = ['gemini-3-flash-preview', 'gemini-2.5-flash-latest', 'gemini-flash-lite-latest'];
 
     for (const modelName of models) {
@@ -419,9 +435,10 @@ export const useWAI = () => {
             }
             updateMessage(targetSessionId, streamId, { content: accumulatedText, sources: sources.length > 0 ? sources : undefined });
             setIsProcessing(false);
-            return; // Success
+            return; // Success - Stop loop
         } catch(e: any) {
             console.warn(`${modelName} failed:`, e);
+            // If it's the last model, show error. Otherwise continue to next.
             if (models.indexOf(modelName) === models.length - 1) {
                 updateMessage(targetSessionId, streamId, { content: formatErrorMessage(e) });
             }
