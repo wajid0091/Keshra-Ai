@@ -278,7 +278,7 @@ const App: React.FC = () => {
   };
 
   const handleVoiceClick = async () => {
-      if (connectionState === ConnectionState.CONNECTED) {
+      if (connectionState === ConnectionState.CONNECTED || connectionState === ConnectionState.CONNECTING) {
           disconnect();
       } else {
           const result = await connect();
@@ -526,7 +526,7 @@ const App: React.FC = () => {
             <div className="max-w-4xl mx-auto w-full px-4 pt-10">
               {messages.length === 0 && connectionState === ConnectionState.CONNECTED && (
                  <div className="flex flex-col items-center justify-center pt-20">
-                    <div className="cursor-pointer" onClick={() => disconnect()}>
+                    <div className="cursor-pointer" onClick={() => handleVoiceClick()}>
                         <ArcReactor isActive={true} isSpeaking={isSpeaking} volume={volumeLevel} />
                     </div>
                     <p className={`mt-8 text-sm font-bold uppercase tracking-widest ${secondaryTextColor} animate-pulse`}>Listening...</p>

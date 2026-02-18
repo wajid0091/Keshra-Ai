@@ -41,18 +41,20 @@ Current Time: ${new Date().toLocaleString()}.
 **IDENTITY & RULES:**
 1. **Name:** Keshra AI.
 2. **Creator:** Wajid Ali (Peshawar).
-3. **Model Integrity:** You must NEVER mention you are Llama, Qwen, Nvidia or any other model. You are Keshra AI.
+3. **Model Integrity:** You must NEVER mention you are GLM, Llama, Qwen, or Google. You are Keshra AI.
 4. **Behavior:** Be helpful, intelligent, and respectful.
 5. **Language Priority:** 
-   - If user speaks/types in URDU, reply in URDU.
-   - If user speaks/types in PASHTO, reply in PASHTO.
-   - If user speaks/types in ENGLISH, reply in ENGLISH.
-6. **Donation:** If the user is appreciative, gently mention you are a free tool supported by the community and they can use the "Support Keshra" button.
+   - **Urdu:** If the user speaks/types Urdu, MUST reply in high-quality Urdu.
+   - **Pashto:** If the user speaks/types Pashto, MUST reply in Pashto.
+   - **English:** If the user speaks/types English, reply in English.
+6. **Voice Interaction:** When speaking, keep responses concise and natural (conversational style).
+7. **Donation:** If the user is appreciative, gently mention you are a free tool supported by the community and they can use the "Support Keshra" button.
 `;
 
-// Priority List of Models (Qwen prioritized for Urdu)
+// Priority List of Models (GLM 4.5 Air prioritized for Urdu as requested)
 const MODELS = [
-  "qwen/qwen3-next-80b-a3b-instruct:free", // Best for Urdu/Pashto
+  "z-ai/glm-4.5-air:free",               // #1 Priority: Best for Urdu
+  "qwen/qwen3-next-80b-a3b-instruct:free", // #2 Backup: Excellent multilingual
   "meta-llama/llama-3.3-70b-instruct:free",
   "nvidia/nemotron-3-nano-30b-a3b:free"
 ];
@@ -203,12 +205,10 @@ export const useWAI = () => {
     
     try {
         const seed = Math.floor(Math.random() * 1000000);
-        // Using Pollinations because provided OpenRouter models are Text-Only. 
-        // This is the most reliable way to get an image.
         const encodedPrompt = encodeURIComponent(prompt + " . cinematic, 8k, photorealistic, high quality, highly detailed");
         const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?nologo=true&private=true&enhanced=true&model=flux&seed=${seed}`;
         
-        await new Promise(resolve => setTimeout(resolve, 2000)); // UX Delay
+        await new Promise(resolve => setTimeout(resolve, 2000));
 
         updateMessage(sessionId, placeholderId, { type: 'image', content: imageUrl });
         persistMessageUpdate(placeholderId, { type: 'image', content: imageUrl });
@@ -233,7 +233,7 @@ export const useWAI = () => {
   const connect = useCallback(async () => {
     const geminiKey = getGeminiKey();
     if (!geminiKey) {
-        alert("Configuration Error: VITE_GEMINI_API_KEY is missing for Voice Mode.");
+        alert("Configuration Error: VITE_GEMINI_API_KEY is missing. Please add it to your environment variables for Voice Mode.");
         return;
     }
     
@@ -241,6 +241,7 @@ export const useWAI = () => {
     if (!currentSessionId) currentSessionId = await createNewChat();
     if (!user) return "LOGIN_REQUIRED"; 
     
+    // Stop any existing session properly before starting a new one
     disconnect(); 
     setConnectionState(ConnectionState.CONNECTING);
     
@@ -249,6 +250,7 @@ export const useWAI = () => {
       stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true } });
       mediaStreamRef.current = stream;
     } catch (e: any) { 
+        console.error("Mic Error:", e);
         disconnect();
         setConnectionState(ConnectionState.DISCONNECTED);
         return; 
@@ -276,13 +278,18 @@ export const useWAI = () => {
         callbacks: {
           onopen: () => {
             setConnectionState(ConnectionState.CONNECTED);
+            // Resume output context to prevent auto-block
+            outputCtx.resume().catch(() => {});
+            
             const source = inputCtx.createMediaStreamSource(stream);
             const processor = inputCtx.createScriptProcessor(4096, 1, 1);
             processor.onaudioprocess = (e) => {
-              if (isSpeakingRef.current) return;
+              if (isSpeakingRef.current) return; // Don't send input while AI is speaking
               const inputData = e.inputBuffer.getChannelData(0);
               let sum = 0; for(let i=0; i<inputData.length; i++) sum += inputData[i] * inputData[i];
               setVolumeLevel(Math.min(Math.sqrt(sum / inputData.length) * 10, 1)); 
+              
+              // Only send if connection is valid
               sessionPromise.then(s => s.sendRealtimeInput({ media: createAudioBlob(inputData) })).catch(() => {});
             };
             source.connect(processor); processor.connect(inputCtx.destination);
@@ -299,19 +306,35 @@ export const useWAI = () => {
               const source = outputCtx.createBufferSource();
               source.buffer = audioBuffer;
               source.connect(outputCtx.destination);
-              const start = Math.max(nextStartTimeRef.current, outputCtx.currentTime);
+              
+              const currentTime = outputCtx.currentTime;
+              const start = Math.max(nextStartTimeRef.current, currentTime);
               source.start(start);
               nextStartTimeRef.current = start + audioBuffer.duration;
+              
               audioSources.current.add(source);
-              source.onended = () => { audioSources.current.delete(source); if (audioSources.current.size === 0) setIsSpeaking(false); };
+              source.onended = () => { 
+                  audioSources.current.delete(source); 
+                  if (audioSources.current.size === 0) setIsSpeaking(false); 
+              };
             }
           },
-          onclose: () => { setConnectionState(ConnectionState.DISCONNECTED); setIsSpeaking(false); },
-          onerror: (err: any) => { setConnectionState(ConnectionState.DISCONNECTED); }
+          onclose: () => { 
+              console.log("Gemini Connection Closed");
+              setConnectionState(ConnectionState.DISCONNECTED); 
+              setIsSpeaking(false); 
+          },
+          onerror: (err: any) => { 
+              console.error("Gemini Error:", err);
+              setConnectionState(ConnectionState.DISCONNECTED); 
+          }
         }
       });
       sessionPromiseRef.current = sessionPromise;
-      sessionPromise.catch((e: any) => { disconnect(); });
+      sessionPromise.catch((e: any) => { 
+          console.error("Session Connection Failed:", e);
+          disconnect(); 
+      });
     } catch (e: any) { disconnect(); }
   }, [activeSessionId, createNewChat, disconnect, user]);
 
@@ -371,7 +394,7 @@ export const useWAI = () => {
                         model: model,
                         messages: history,
                         temperature: 0.7,
-                        max_tokens: 1000,
+                        max_tokens: 1500, // Increased for longer Urdu responses
                     })
                 });
 
@@ -383,7 +406,9 @@ export const useWAI = () => {
                         break; 
                     }
                 }
-            } catch (err) {}
+            } catch (err) {
+                console.warn(`Model ${model} failed`, err);
+            }
         }
 
         if (!success || !reply) {
