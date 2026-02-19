@@ -227,12 +227,28 @@ export const useWAI = () => {
     }
   }, []);
 
-  // --- IMAGE GENERATION LOGIC (GEMINI) ---
+  // --- IMAGE GENERATION LOGIC (GEMINI + FALLBACK) ---
   const handleImageGen = async (prompt: string, sessionId: string) => {
     const placeholderId = generateUUID();
     addMessage('model', 'Creating your masterpiece...', 'loading-image', undefined, sessionId, placeholderId);
     setIsProcessing(true);
     
+    const fallbackToPollinations = async () => {
+        try {
+            const seed = Math.floor(Math.random() * 1000000);
+            const encodedPrompt = encodeURIComponent(prompt + " . cinematic, 8k, photorealistic, high quality, highly detailed");
+            const imageUrl = `https://image.pollinations.ai/prompt/${encodedPrompt}?nologo=true&private=true&enhanced=true&model=flux&seed=${seed}`;
+            
+            // Artificial delay for UX
+            await new Promise(resolve => setTimeout(resolve, 1500));
+
+            updateMessage(sessionId, placeholderId, { type: 'image', content: imageUrl });
+            try { await persistMessageUpdate(placeholderId, { type: 'image', content: imageUrl }); } catch (e) {}
+        } catch (e) {
+            updateMessage(sessionId, placeholderId, { type: 'text', content: "Error generating image with both providers." });
+        }
+    };
+
     try {
         const geminiKey = getGeminiKey();
         if (!geminiKey) throw new Error("Gemini API Key not found");
@@ -268,8 +284,8 @@ export const useWAI = () => {
         }
 
     } catch(e: any) {
-        console.error("Image Gen Error", e);
-        updateMessage(sessionId, placeholderId, { type: 'text', content: "Error generating image: " + (e.message || "Unknown error") });
+        console.warn("Gemini Image Gen Error (Falling back to Pollinations):", e);
+        await fallbackToPollinations();
     } finally {
         setIsProcessing(false);
     }
